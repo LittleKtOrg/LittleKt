@@ -90,8 +90,8 @@ internal class PathDrawer(batchManager: BatchManager, private val lineDrawer: Li
         }
         if (!open) {
             lineDrawer.line(
-                path[path.size - 2],
-                path[path.size - 1],
+                path[size - 2],
+                path[size - 1],
                 path[0],
                 path[1],
                 thickness,
