@@ -1,12 +1,12 @@
 package com.littlekt
 
-import java.lang.foreign.MemorySegment
+import io.ygdrasil.wgpu.WGPUInstance
 
 /**
  * @author Colton Daily
  * @date 4/2/2024
  */
-class Instance(val segment: MemorySegment) {
+class Instance(val segment: WGPUInstance) {
     override fun toString(): String {
         return "Instance()"
     }

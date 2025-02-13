@@ -1,3 +1,5 @@
+@file:OptIn(ExperimentalUnsignedTypes::class)
+
 package com.littlekt.graphics.webgpu
 
 import com.littlekt.Releasable
@@ -5,24 +7,84 @@ import com.littlekt.file.*
 import com.littlekt.log.Logger
 import com.littlekt.resources.BufferResourceInfo
 import com.littlekt.resources.TextureResourceInfo
-import com.littlekt.wgpu.*
-import com.littlekt.wgpu.WGPU.*
-import java.lang.foreign.Arena
-import java.lang.foreign.MemorySegment
-import java.lang.foreign.SegmentAllocator
-import java.lang.foreign.ValueLayout
+import io.ygdrasil.wgpu.wgpuDeviceCreateTexture
+import ffi.ArrayHolder
+import ffi.MemoryAllocator
+import ffi.MemoryBuffer
+import ffi.NativeAddress
+import ffi.memoryScope
+import io.ygdrasil.wgpu.WGPUAdapter
+import io.ygdrasil.wgpu.WGPUBuffer
+import io.ygdrasil.wgpu.WGPUBufferDescriptor
+import io.ygdrasil.wgpu.WGPUCommandEncoderDescriptor
+import io.ygdrasil.wgpu.WGPUCompositeAlphaMode
+import io.ygdrasil.wgpu.WGPUDevice
+import io.ygdrasil.wgpu.WGPUExtent3D
+import io.ygdrasil.wgpu.WGPULimits
+import io.ygdrasil.wgpu.WGPUPipelineLayoutDescriptor
+import io.ygdrasil.wgpu.WGPUQueue
+import io.ygdrasil.wgpu.WGPURequestAdapterStatus_Success
+import io.ygdrasil.wgpu.WGPURequestDeviceCallback
+import io.ygdrasil.wgpu.WGPURequestDeviceCallbackInfo
+import io.ygdrasil.wgpu.WGPUSType_ShaderSourceWGSL
+import io.ygdrasil.wgpu.WGPUSampler
+import io.ygdrasil.wgpu.WGPUShaderModule
+import io.ygdrasil.wgpu.WGPUShaderModuleDescriptor
+import io.ygdrasil.wgpu.WGPUShaderSourceWGSL
+import io.ygdrasil.wgpu.WGPUSurface
+import io.ygdrasil.wgpu.WGPUSurfaceCapabilities
+import io.ygdrasil.wgpu.WGPUSurfaceConfiguration
+import io.ygdrasil.wgpu.WGPUSurfaceTexture
+import io.ygdrasil.wgpu.WGPUTexture
+import io.ygdrasil.wgpu.WGPUTextureFormat
+import io.ygdrasil.wgpu.WGPUTextureView
+import io.ygdrasil.wgpu.WGPUTextureViewDescriptor
+import io.ygdrasil.wgpu.wgpuAdapterGetLimits
+import io.ygdrasil.wgpu.wgpuAdapterHasFeature
+import io.ygdrasil.wgpu.wgpuAdapterRelease
+import io.ygdrasil.wgpu.wgpuAdapterRequestDevice
+import io.ygdrasil.wgpu.wgpuBufferGetMappedRange
+import io.ygdrasil.wgpu.wgpuBufferRelease
+import io.ygdrasil.wgpu.wgpuBufferUnmap
+import io.ygdrasil.wgpu.wgpuDeviceCreateBindGroup
+import io.ygdrasil.wgpu.wgpuDeviceCreateBindGroupLayout
+import io.ygdrasil.wgpu.wgpuDeviceCreateBuffer
+import io.ygdrasil.wgpu.wgpuDeviceCreateCommandEncoder
+import io.ygdrasil.wgpu.wgpuDeviceCreateRenderPipeline
+import io.ygdrasil.wgpu.wgpuDeviceCreateComputePipeline
+import io.ygdrasil.wgpu.wgpuDeviceCreatePipelineLayout
+import io.ygdrasil.wgpu.wgpuDeviceCreateSampler
+import io.ygdrasil.wgpu.wgpuDeviceCreateShaderModule
+import io.ygdrasil.wgpu.wgpuDeviceGetLimits
+import io.ygdrasil.wgpu.wgpuDeviceGetQueue
+import io.ygdrasil.wgpu.wgpuDeviceHasFeature
+import io.ygdrasil.wgpu.wgpuDevicePoll
+import io.ygdrasil.wgpu.wgpuDeviceRelease
+import io.ygdrasil.wgpu.wgpuQueueRelease
+import io.ygdrasil.wgpu.wgpuQueueSubmit
+import io.ygdrasil.wgpu.wgpuQueueWriteBuffer
+import io.ygdrasil.wgpu.wgpuQueueWriteTexture
+import io.ygdrasil.wgpu.wgpuSamplerRelease
+import io.ygdrasil.wgpu.wgpuShaderModuleRelease
+import io.ygdrasil.wgpu.wgpuSurfaceConfigure
+import io.ygdrasil.wgpu.wgpuSurfaceGetCapabilities
+import io.ygdrasil.wgpu.wgpuSurfaceGetCurrentTexture
+import io.ygdrasil.wgpu.wgpuSurfacePresent
+import io.ygdrasil.wgpu.wgpuSurfaceRelease
+import io.ygdrasil.wgpu.wgpuTextureCreateView
+import io.ygdrasil.wgpu.wgpuTextureRelease
+import io.ygdrasil.wgpu.wgpuTextureViewRelease
 import kotlinx.atomicfu.atomic
 import kotlinx.atomicfu.update
 
-actual class Device(val segment: MemorySegment) : Releasable {
+actual class Device(val segment: WGPUDevice) : Releasable {
 
-    actual val queue: Queue by lazy { Queue(wgpuDeviceGetQueue(segment)) }
+    actual val queue: Queue by lazy { Queue(wgpuDeviceGetQueue(segment) ?: error("Failed to get queue.")) }
 
     actual val features: List<Feature> by lazy {
         val list = mutableListOf<Feature>()
         Feature.entries.forEach {
-            val result = wgpuDeviceHasFeature(segment, it.nativeVal)
-            if (result == 1) {
+            if (wgpuDeviceHasFeature(segment, it.nativeVal)) {
                 list += it
             }
         }
@@ -30,403 +92,143 @@ actual class Device(val segment: MemorySegment) : Releasable {
     }
 
     actual val limits: Limits by lazy {
-        Arena.ofConfined().use { scope ->
-            val supported = WGPUSupportedLimits.allocate(scope)
-            wgpuDeviceGetLimits(segment, supported)
-            val desc = WGPUSupportedLimits.limits(supported)
+        memoryScope { scope ->
+            val desc = WGPULimits.allocate(scope)
+            wgpuDeviceGetLimits(segment, desc)
             Limits(
-                maxTextureDimension1D = WGPULimits.maxTextureDimension1D(desc),
-                maxTextureDimension2D = WGPULimits.maxTextureDimension2D(desc),
-                maxTextureDimension3D = WGPULimits.maxTextureDimension3D(desc),
-                maxTextureArrayLayers = WGPULimits.maxTextureArrayLayers(desc),
-                maxBindGroups = WGPULimits.maxBindGroups(desc),
-                maxBindGroupsPlusVertexBuffers = WGPULimits.maxBindGroupsPlusVertexBuffers(desc),
-                maxBindingsPerBindGroup = WGPULimits.maxBindingsPerBindGroup(desc),
+                maxTextureDimension1D = desc.maxTextureDimension1D.toInt(),
+                maxTextureDimension2D = desc.maxTextureDimension2D.toInt(),
+                maxTextureDimension3D = desc.maxTextureDimension3D.toInt(),
+                maxTextureArrayLayers = desc.maxTextureArrayLayers.toInt(),
+                maxBindGroups = desc.maxBindGroups.toInt(),
+                maxBindGroupsPlusVertexBuffers = desc.maxBindGroupsPlusVertexBuffers.toInt(),
+                maxBindingsPerBindGroup = desc.maxBindingsPerBindGroup.toInt(),
                 maxDynamicUniformBuffersPerPipelineLayout =
-                    WGPULimits.maxDynamicUniformBuffersPerPipelineLayout(desc),
+                    desc.maxDynamicUniformBuffersPerPipelineLayout.toInt(),
                 maxDynamicStorageBuffersPerPipelineLayout =
-                    WGPULimits.maxDynamicStorageBuffersPerPipelineLayout(desc),
+                    desc.maxDynamicStorageBuffersPerPipelineLayout.toInt(),
                 maxSampledTexturesPerShaderStage =
-                    WGPULimits.maxSampledTexturesPerShaderStage(desc),
-                maxSamplersPerShaderStage = WGPULimits.maxSamplersPerShaderStage(desc),
-                maxStorageBuffersPerShaderStage = WGPULimits.maxStorageBuffersPerShaderStage(desc),
+                    desc.maxSampledTexturesPerShaderStage.toInt(),
+                maxSamplersPerShaderStage = desc.maxSamplersPerShaderStage.toInt(),
+                maxStorageBuffersPerShaderStage = desc.maxStorageBuffersPerShaderStage.toInt(),
                 maxStorageTexturesPerShaderStage =
-                    WGPULimits.maxStorageTexturesPerShaderStage(desc),
-                maxUniformBuffersPerShaderStage = WGPULimits.maxUniformBuffersPerShaderStage(desc),
-                maxUniformBufferBindingSize = WGPULimits.maxUniformBufferBindingSize(desc),
-                maxStorageBufferBindingSize = WGPULimits.maxStorageBufferBindingSize(desc),
-                minUniformBufferOffsetAlignment = WGPULimits.minUniformBufferOffsetAlignment(desc),
-                minStorageBufferOffsetAlignment = WGPULimits.minStorageBufferOffsetAlignment(desc),
-                maxVertexBuffers = WGPULimits.maxVertexBuffers(desc),
-                maxBufferSize = WGPULimits.maxBufferSize(desc),
-                maxVertexAttributes = WGPULimits.maxVertexAttributes(desc),
-                maxVertexBufferArrayStride = WGPULimits.maxVertexBufferArrayStride(desc),
-                maxInterStageShaderComponents = WGPULimits.maxInterStageShaderComponents(desc),
-                maxInterStageShaderVariables = WGPULimits.maxInterStageShaderVariables(desc),
-                maxColorAttachments = WGPULimits.maxColorAttachments(desc),
-                maxColorAttachmentBytesPerSample =
-                    WGPULimits.maxColorAttachmentBytesPerSample(desc),
-                maxComputeWorkgroupStorageSize = WGPULimits.maxComputeWorkgroupStorageSize(desc),
-                maxComputeInvocationsPerWorkgroup =
-                    WGPULimits.maxComputeInvocationsPerWorkgroup(desc),
-                maxComputeWorkgroupSizeX = WGPULimits.maxComputeWorkgroupSizeX(desc),
-                maxComputeWorkgroupSizeY = WGPULimits.maxComputeWorkgroupSizeY(desc),
-                maxComputeWorkgroupSizeZ = WGPULimits.maxComputeWorkgroupSizeZ(desc),
-                maxComputeWorkgroupsPerDimension = WGPULimits.maxComputeWorkgroupsPerDimension(desc),
+                    desc.maxStorageTexturesPerShaderStage.toInt(),
+                maxUniformBuffersPerShaderStage = desc.maxUniformBuffersPerShaderStage.toInt(),
+                maxUniformBufferBindingSize = desc.maxUniformBufferBindingSize.toLong(),
+                maxStorageBufferBindingSize = desc.maxStorageBufferBindingSize.toLong(),
+                minUniformBufferOffsetAlignment = desc.minUniformBufferOffsetAlignment.toInt(),
+                minStorageBufferOffsetAlignment = desc.minStorageBufferOffsetAlignment.toInt(),
+                maxVertexBuffers = desc.maxVertexBuffers.toInt(),
+                maxBufferSize = desc.maxBufferSize.toLong(),
+                maxVertexAttributes = desc.maxVertexAttributes.toInt(),
+                maxVertexBufferArrayStride = desc.maxVertexBufferArrayStride.toInt(),
+                maxInterStageShaderVariables = desc.maxInterStageShaderVariables.toInt(),
+                maxColorAttachments = desc.maxColorAttachments.toInt(),
+                maxColorAttachmentBytesPerSample = desc.maxColorAttachmentBytesPerSample.toInt(),
+                maxComputeWorkgroupStorageSize = desc.maxComputeWorkgroupStorageSize.toInt(),
+                maxComputeInvocationsPerWorkgroup = desc.maxComputeInvocationsPerWorkgroup.toInt(),
+                maxComputeWorkgroupSizeX = desc.maxComputeWorkgroupSizeX.toInt(),
+                maxComputeWorkgroupSizeY = desc.maxComputeWorkgroupSizeY.toInt(),
+                maxComputeWorkgroupSizeZ = desc.maxComputeWorkgroupSizeZ.toInt(),
+                maxComputeWorkgroupsPerDimension = desc.maxComputeWorkgroupsPerDimension.toInt(),
             )
         }
     }
 
     actual fun createShaderModule(src: String): ShaderModule {
-        return Arena.ofConfined().use { scope ->
-            val desc = WGPUShaderModuleDescriptor.allocate(scope)
-            val wgsl = WGPUShaderModuleWGSLDescriptor.allocate(scope)
-            val wgslChain = WGPUShaderModuleWGSLDescriptor.chain(wgsl)
-
-            WGPUChainedStruct.next(wgslChain, WGPU_NULL)
-            WGPUChainedStruct.sType(wgslChain, WGPUSType_ShaderModuleWGSLDescriptor())
-            WGPUShaderModuleWGSLDescriptor.code(wgsl, scope.allocateFrom(src))
-            WGPUShaderModuleDescriptor.nextInChain(desc, wgslChain)
-            ShaderModule(wgpuDeviceCreateShaderModule(segment, desc))
+        return memoryScope { scope ->
+            ShaderModule(wgpuDeviceCreateShaderModule(segment, scope.map(src)) ?: error("fail to create shader module"))
         }
     }
 
+    internal fun MemoryAllocator.map(input: String): WGPUShaderModuleDescriptor =
+        WGPUShaderModuleDescriptor.allocate(this).also { output ->
+            output.nextInChain = mapCode(input).handler
+        }
+
+    private fun MemoryAllocator.mapCode(input: String) = WGPUShaderModuleDescriptor.allocate(this).apply {
+        nextInChain = WGPUShaderSourceWGSL.allocate(this@mapCode).apply {
+            code.length = input.length.toULong()
+            code.data = allocateFrom(input)
+            chain.sType = WGPUSType_ShaderSourceWGSL
+        }.handler
+    }
+
+
     actual fun createRenderPipeline(desc: RenderPipelineDescriptor): RenderPipeline {
-        return Arena.ofConfined().use { scope ->
-            val fragDesc =
-                if (desc.fragment != null) {
-                    val fragDesc = WGPUFragmentState.allocate(scope)
-                    WGPUFragmentState.module(fragDesc, desc.fragment.module.segment)
-                    WGPUFragmentState.entryPoint(
-                        fragDesc,
-                        desc.fragment.entryPoint.toNativeString(scope),
-                    )
-
-                    val targets =
-                        WGPUColorTargetState.allocateArray(
-                            desc.fragment.targets.size.toLong(),
-                            scope,
-                        )
-                    desc.fragment.targets.forEach { colorTargetState ->
-                        if (colorTargetState.blendState == null) {
-                            TODO("Null blend states aren't currently supported.")
-                        }
-                        val blendState = WGPUBlendState.allocate(scope)
-                        val colorBlend = WGPUBlendState.color(blendState)
-                        val alphaBlend = WGPUBlendState.alpha(blendState)
-                        WGPUBlendComponent.srcFactor(
-                            colorBlend,
-                            colorTargetState.blendState.color.srcFactor.nativeVal,
-                        )
-                        WGPUBlendComponent.dstFactor(
-                            colorBlend,
-                            colorTargetState.blendState.color.dstFactor.nativeVal,
-                        )
-                        WGPUBlendComponent.operation(
-                            colorBlend,
-                            colorTargetState.blendState.color.operation.nativeVal,
-                        )
-                        WGPUBlendComponent.srcFactor(
-                            alphaBlend,
-                            colorTargetState.blendState.alpha.srcFactor.nativeVal,
-                        )
-                        WGPUBlendComponent.dstFactor(
-                            alphaBlend,
-                            colorTargetState.blendState.alpha.dstFactor.nativeVal,
-                        )
-                        WGPUBlendComponent.operation(
-                            alphaBlend,
-                            colorTargetState.blendState.alpha.operation.nativeVal,
-                        )
-
-                        WGPUColorTargetState.format(targets, colorTargetState.format.nativeVal)
-                        WGPUColorTargetState.writeMask(
-                            targets,
-                            colorTargetState.writeMask.usageFlag,
-                        )
-                        WGPUColorTargetState.blend(targets, blendState)
-                    }
-                    WGPUFragmentState.targets(fragDesc, targets)
-                    WGPUFragmentState.targetCount(fragDesc, desc.fragment.targets.size.toLong())
-                    fragDesc
-                } else {
-                    WGPU_NULL
-                }
-
-            val buffers =
-                desc.vertex.buffers.mapToNativeEntries(
-                    scope,
-                    WGPUVertexBufferLayout.sizeof(),
-                    WGPUVertexBufferLayout::allocateArray,
-                ) { bufferLayout, nativeBufferLayout ->
-                    val attributes =
-                        bufferLayout.attributes.mapToNativeEntries(
-                            scope,
-                            WGPUVertexAttribute.sizeof(),
-                            WGPUVertexAttribute::allocateArray,
-                        ) { attribute, nativeAttribute ->
-                            WGPUVertexAttribute.shaderLocation(
-                                nativeAttribute,
-                                attribute.shaderLocation,
-                            )
-                            WGPUVertexAttribute.format(nativeAttribute, attribute.format.nativeVal)
-                            WGPUVertexAttribute.offset(nativeAttribute, attribute.offset)
-                        }
-
-                    WGPUVertexBufferLayout.arrayStride(nativeBufferLayout, bufferLayout.arrayStride)
-                    WGPUVertexBufferLayout.stepMode(
-                        nativeBufferLayout,
-                        bufferLayout.stepMode.nativeVal,
-                    )
-                    WGPUVertexBufferLayout.attributeCount(
-                        nativeBufferLayout,
-                        bufferLayout.attributes.size.toLong(),
-                    )
-                    WGPUVertexBufferLayout.attributes(nativeBufferLayout, attributes)
-                }
-
-            val descriptor = WGPURenderPipelineDescriptor.allocate(scope)
-            val vertexState = WGPURenderPipelineDescriptor.vertex(descriptor)
-            val primitiveState = WGPURenderPipelineDescriptor.primitive(descriptor)
-            val multisampleState = WGPURenderPipelineDescriptor.multisample(descriptor)
-
-            WGPURenderPipelineDescriptor.label(
-                descriptor,
-                desc.label?.toNativeString(scope) ?: WGPU_NULL,
-            )
-            WGPURenderPipelineDescriptor.layout(descriptor, desc.layout.segment)
-
-            WGPUVertexState.module(vertexState, desc.vertex.module.segment)
-            WGPUVertexState.entryPoint(vertexState, desc.vertex.entryPoint.toNativeString(scope))
-            WGPUVertexState.buffers(vertexState, buffers)
-            WGPUVertexState.bufferCount(vertexState, desc.vertex.buffers.size.toLong())
-
-            WGPUPrimitiveState.topology(primitiveState, desc.primitive.topology.nativeVal)
-            WGPUPrimitiveState.stripIndexFormat(
-                primitiveState,
-                desc.primitive.stripIndexFormat?.nativeVal ?: WGPUIndexFormat_Undefined(),
-            )
-            WGPUPrimitiveState.frontFace(primitiveState, desc.primitive.frontFace.nativeVal)
-            WGPUPrimitiveState.cullMode(primitiveState, desc.primitive.cullMode.nativeVal)
-
-            desc.depthStencil?.let {
-                val depthStencilState = WGPUDepthStencilState.allocate(scope)
-                WGPUDepthStencilState.format(depthStencilState, it.format.nativeVal)
-                WGPUDepthStencilState.depthWriteEnabled(
-                    depthStencilState,
-                    it.depthWriteEnabled.toInt(),
-                )
-                WGPUDepthStencilState.depthCompare(depthStencilState, it.depthCompare.nativeVal)
-                WGPUDepthStencilState.stencilReadMask(depthStencilState, it.stencil.readMask)
-                WGPUDepthStencilState.stencilWriteMask(depthStencilState, it.stencil.writeMask)
-                WGPUDepthStencilState.depthBias(depthStencilState, it.bias.constant)
-                WGPUDepthStencilState.depthBiasSlopeScale(depthStencilState, it.bias.slopeScale)
-                WGPUDepthStencilState.depthBiasClamp(depthStencilState, it.bias.clamp)
-
-                val stencilFront = WGPUDepthStencilState.stencilFront(depthStencilState)
-                WGPUStencilFaceState.compare(stencilFront, it.stencil.front.compare.nativeVal)
-                WGPUStencilFaceState.failOp(stencilFront, it.stencil.front.failOp.nativeVal)
-                WGPUStencilFaceState.depthFailOp(
-                    stencilFront,
-                    it.stencil.front.depthFailOp.nativeVal,
-                )
-                WGPUStencilFaceState.passOp(stencilFront, it.stencil.front.passOp.nativeVal)
-
-                val stencilBack = WGPUDepthStencilState.stencilBack(depthStencilState)
-                WGPUStencilFaceState.compare(stencilBack, it.stencil.back.compare.nativeVal)
-                WGPUStencilFaceState.failOp(stencilBack, it.stencil.back.failOp.nativeVal)
-                WGPUStencilFaceState.depthFailOp(stencilBack, it.stencil.back.depthFailOp.nativeVal)
-                WGPUStencilFaceState.passOp(stencilBack, it.stencil.back.passOp.nativeVal)
-
-                WGPURenderPipelineDescriptor.depthStencil(descriptor, depthStencilState)
-            }
-
-            WGPUMultisampleState.count(multisampleState, desc.multisample.count)
-            WGPUMultisampleState.mask(multisampleState, desc.multisample.mask)
-            WGPUMultisampleState.alphaToCoverageEnabled(
-                multisampleState,
-                desc.multisample.alphaToCoverageEnabled.toInt(),
-            )
-
-            WGPURenderPipelineDescriptor.fragment(descriptor, fragDesc)
-
-            RenderPipeline(wgpuDeviceCreateRenderPipeline(segment, descriptor))
+        return memoryScope { scope ->
+            RenderPipeline(wgpuDeviceCreateRenderPipeline(segment, scope.map(desc)) ?: error("fail to create render pipeline"))
         }
     }
 
     actual fun createComputePipeline(desc: ComputePipelineDescriptor): ComputePipeline {
-        return Arena.ofConfined().use { scope ->
-            val wgpuDesc = WGPUComputePipelineDescriptor.allocate(scope)
-
-            val computeDesc = WGPUProgrammableStageDescriptor.allocate(scope)
-            WGPUProgrammableStageDescriptor.entryPoint(
-                computeDesc,
-                desc.compute.entryPoint.toNativeString(scope),
-            )
-            WGPUProgrammableStageDescriptor.module(computeDesc, desc.compute.module.segment)
-
-            WGPUComputePipelineDescriptor.layout(wgpuDesc, desc.layout.segment)
-            WGPUComputePipelineDescriptor.compute(wgpuDesc, computeDesc)
-            WGPUComputePipelineDescriptor.label(
-                wgpuDesc,
-                desc.label?.toNativeString(scope) ?: WGPU_NULL,
-            )
-
-            ComputePipeline(wgpuDeviceCreateComputePipeline(segment, wgpuDesc))
+        return memoryScope { scope ->
+            ComputePipeline(wgpuDeviceCreateComputePipeline(segment, scope.map(desc)) ?: error("fail to create compute pipeline"))
         }
     }
 
     actual fun createPipelineLayout(desc: PipelineLayoutDescriptor): PipelineLayout {
-        return Arena.ofConfined().use { scope ->
-            val wgpuDesc = WGPUPipelineLayoutDescriptor.allocate(scope)
-            WGPUPipelineLayoutDescriptor.bindGroupLayouts(
-                wgpuDesc,
-                desc.segments.toNativeArray(scope),
-            )
-            WGPUPipelineLayoutDescriptor.bindGroupLayoutCount(wgpuDesc, desc.segments.size.toLong())
-            WGPUPipelineLayoutDescriptor.label(
-                wgpuDesc,
-                desc.label?.toNativeString(scope) ?: WGPU_NULL,
-            )
-            PipelineLayout(wgpuDeviceCreatePipelineLayout(segment, wgpuDesc))
+        return memoryScope { scope ->
+            PipelineLayout(wgpuDeviceCreatePipelineLayout(segment, scope.map(desc)) ?: error("fail to create pipeline layout"))
         }
     }
 
+    internal fun MemoryAllocator.map(input: PipelineLayoutDescriptor): WGPUPipelineLayoutDescriptor =
+        WGPUPipelineLayoutDescriptor.allocate(this).also { output ->
+            if (input.label != null) map(input.label, output.label)
+            if (input.segments.isNotEmpty()) {
+                output.bindGroupLayoutCount = input.segments.size.toULong()
+                output.bindGroupLayouts = input.segments.map { it.handler }
+                    .let { bufferOfAddresses(it) }
+                    .let { ArrayHolder(it.handler) }
+            }
+        }
+
+
+
     actual fun createCommandEncoder(label: String?): CommandEncoder {
-        return Arena.ofConfined().use { scope ->
+        return memoryScope { scope ->
             val descriptor = WGPUCommandEncoderDescriptor.allocate(scope)
-            WGPUCommandEncoderDescriptor.label(
-                descriptor,
-                label?.toNativeString(scope) ?: WGPU_NULL,
-            )
-            CommandEncoder(wgpuDeviceCreateCommandEncoder(segment, descriptor))
+            CommandEncoder(wgpuDeviceCreateCommandEncoder(segment, descriptor) ?: error("fail to create command encoder"))
         }
     }
 
     actual fun createBuffer(desc: BufferDescriptor): GPUBuffer {
-        return Arena.ofConfined().use { scope ->
-            val descriptor = WGPUBufferDescriptor.allocate(scope)
-            WGPUBufferDescriptor.nextInChain(descriptor, WGPU_NULL)
-            WGPUBufferDescriptor.usage(descriptor, desc.usage.usageFlag)
-            WGPUBufferDescriptor.size(descriptor, desc.size)
-            WGPUBufferDescriptor.mappedAtCreation(descriptor, desc.mappedAtCreation.toInt())
-            WGPUBufferDescriptor.label(descriptor, desc.label.toNativeString(scope))
-            GPUBuffer(wgpuDeviceCreateBuffer(segment, descriptor).asSlice(0, desc.size), desc.size)
+        return memoryScope { scope ->
+            GPUBuffer(wgpuDeviceCreateBuffer(segment, scope.map(desc)) ?: error("fail to create buffer"), desc.size)
         }
     }
 
+    internal fun MemoryAllocator.map(input: BufferDescriptor) = WGPUBufferDescriptor.allocate(this).also { output ->
+        map(input.label, output.label)
+        output.size = input.size.toULong()
+        output.usage = input.usage.usageFlag.toULong()
+        output.mappedAtCreation = input.mappedAtCreation
+    }
+
+
     actual fun createBindGroupLayout(desc: BindGroupLayoutDescriptor): BindGroupLayout {
-        return Arena.ofConfined().use { scope ->
-            val descriptor = WGPUBindGroupLayoutDescriptor.allocate(scope)
-            WGPUBindGroupLayoutDescriptor.label(
-                descriptor,
-                desc.label?.toNativeString(scope) ?: WGPU_NULL,
-            )
-            val entries =
-                desc.entries.mapToNativeEntries(
-                    scope,
-                    WGPUBindGroupLayoutEntry.sizeof(),
-                    WGPUBindGroupLayoutEntry::allocateArray,
-                ) { entry, nativeEntry ->
-                    WGPUBindGroupLayoutEntry.binding(nativeEntry, entry.binding)
-                    WGPUBindGroupLayoutEntry.visibility(nativeEntry, entry.visibility.usageFlag)
-
-                    val bufferBinding = WGPUBindGroupLayoutEntry.buffer(nativeEntry)
-                    val samplerBinding = WGPUBindGroupLayoutEntry.sampler(nativeEntry)
-                    val textureBinding = WGPUBindGroupLayoutEntry.texture(nativeEntry)
-                    val storageTextureBinding = WGPUBindGroupLayoutEntry.storageTexture(nativeEntry)
-
-                    WGPUBufferBindingLayout.type(bufferBinding, WGPUBufferBindingType_Undefined())
-                    WGPUSamplerBindingLayout.type(
-                        samplerBinding,
-                        WGPUSamplerBindingType_Undefined(),
-                    )
-                    WGPUTextureBindingLayout.sampleType(
-                        textureBinding,
-                        WGPUTextureSampleType_Undefined(),
-                    )
-                    WGPUStorageTextureBindingLayout.access(
-                        storageTextureBinding,
-                        WGPUStorageTextureAccess_Undefined(),
-                    )
-
-                    entry.bindingLayout.intoNative(
-                        bufferBinding,
-                        samplerBinding,
-                        textureBinding,
-                        storageTextureBinding,
-                    )
-                }
-            WGPUBindGroupLayoutDescriptor.entries(descriptor, entries)
-            WGPUBindGroupLayoutDescriptor.entryCount(descriptor, desc.entries.size.toLong())
-            BindGroupLayout(wgpuDeviceCreateBindGroupLayout(segment, descriptor))
+        return memoryScope { scope ->
+            BindGroupLayout(wgpuDeviceCreateBindGroupLayout(segment, scope.map(desc)) ?: error("fail to create bind group layout"))
         }
     }
 
     actual fun createBindGroup(desc: BindGroupDescriptor): BindGroup {
-        return Arena.ofConfined().use { scope ->
-            val descriptor = WGPUBindGroupDescriptor.allocate(scope)
-            val entries =
-                desc.entries.mapToNativeEntries(
-                    scope,
-                    WGPUBindGroupEntry.sizeof(),
-                    WGPUBindGroupEntry::allocateArray,
-                ) { entry, nativeEntry ->
-                    WGPUBindGroupEntry.binding(nativeEntry, entry.binding)
-                    entry.resource.intoBindingResource(nativeEntry)
-                }
-            WGPUBindGroupDescriptor.label(
-                descriptor,
-                desc.label?.toNativeString(scope) ?: WGPU_NULL,
-            )
-            WGPUBindGroupDescriptor.layout(descriptor, desc.layout.segment)
-            WGPUBindGroupDescriptor.entries(descriptor, entries)
-            WGPUBindGroupDescriptor.entryCount(descriptor, desc.entries.size.toLong())
-            BindGroup(wgpuDeviceCreateBindGroup(segment, descriptor))
+        return memoryScope { scope ->
+            BindGroup(wgpuDeviceCreateBindGroup(segment, scope.map(desc)) ?: error("fail to create bind group"))
         }
     }
 
     actual fun createSampler(desc: SamplerDescriptor): Sampler {
-        return Arena.ofConfined().use { scope ->
-            val descriptor = WGPUSamplerDescriptor.allocate(scope)
-
-            WGPUSamplerDescriptor.label(descriptor, desc.label?.toNativeString(scope) ?: WGPU_NULL)
-            WGPUSamplerDescriptor.addressModeU(descriptor, desc.addressModeU.nativeVal)
-            WGPUSamplerDescriptor.addressModeV(descriptor, desc.addressModeV.nativeVal)
-            WGPUSamplerDescriptor.addressModeW(descriptor, desc.addressModeW.nativeVal)
-            WGPUSamplerDescriptor.magFilter(descriptor, desc.magFilter.nativeVal)
-            WGPUSamplerDescriptor.minFilter(descriptor, desc.minFilter.nativeVal)
-            WGPUSamplerDescriptor.mipmapFilter(descriptor, desc.mipmapFilter.nativeVal)
-            WGPUSamplerDescriptor.lodMinClamp(descriptor, desc.lodMinClamp)
-            WGPUSamplerDescriptor.lodMaxClamp(descriptor, desc.lodMaxClamp)
-            WGPUSamplerDescriptor.compare(
-                descriptor,
-                desc.compare?.nativeVal ?: WGPUCompareFunction_Undefined(),
-            )
-            WGPUSamplerDescriptor.maxAnisotropy(descriptor, desc.maxAnisotropy)
-
-            Sampler(wgpuDeviceCreateSampler(segment, descriptor))
+        return memoryScope { scope ->
+            Sampler(wgpuDeviceCreateSampler(segment, scope.map(desc)) ?: error("fail to create sampler"))
         }
     }
 
     actual fun createTexture(desc: TextureDescriptor): WebGPUTexture {
-        return Arena.ofConfined().use { scope ->
-            val descriptor = WGPUTextureDescriptor.allocate(scope)
-            val size = WGPUTextureDescriptor.size(descriptor)
-
-            WGPUTextureDescriptor.label(descriptor, desc.label?.toNativeString(scope) ?: WGPU_NULL)
-            WGPUTextureDescriptor.usage(descriptor, desc.usage.usageFlag)
-            WGPUTextureDescriptor.dimension(descriptor, desc.dimension.nativeVal)
-            WGPUTextureDescriptor.format(descriptor, desc.format.nativeVal)
-            WGPUTextureDescriptor.mipLevelCount(descriptor, desc.mipLevelCount)
-            WGPUTextureDescriptor.sampleCount(descriptor, desc.sampleCount)
-            WGPUExtent3D.width(size, desc.size.width)
-            WGPUExtent3D.height(size, desc.size.height)
-            WGPUExtent3D.depthOrArrayLayers(size, desc.size.depth)
-
-            val textureSize =
-                (desc.size.width * desc.size.height * desc.size.depth * desc.format.bytes).toLong()
-            WebGPUTexture(wgpuDeviceCreateTexture(segment, descriptor), textureSize)
+        return memoryScope { scope ->
+            val textureSize = (desc.size.width * desc.size.height * desc.size.depth * desc.format.bytes).toLong()
+            WebGPUTexture(wgpuDeviceCreateTexture(segment, scope.map(desc)) ?: error("fail to create texture"), textureSize)
         }
     }
 
@@ -545,18 +347,16 @@ actual class Device(val segment: MemorySegment) : Releasable {
      * When running on WebGPU, this is a no-op. Devices are automatically polled.
      */
     actual fun poll(): Boolean {
-        val result = wgpuDevicePoll(segment, true.toInt(), WGPU_NULL)
-        return result == 1
+        return wgpuDevicePoll(segment, true, null)
     }
 }
 
-actual class Adapter(var segment: MemorySegment) : Releasable {
+actual class Adapter(var segment: WGPUAdapter) : Releasable {
     /** The features which can be used to create devices on this adapter. */
     actual val features: List<Feature> by lazy {
         val list = mutableListOf<Feature>()
         Feature.entries.forEach {
-            val result = wgpuAdapterHasFeature(segment, it.nativeVal)
-            if (result == 1) {
+            if (wgpuAdapterHasFeature(segment, it.nativeVal)) {
                 list += it
             }
         }
@@ -568,160 +368,74 @@ actual class Adapter(var segment: MemorySegment) : Releasable {
      * be the same or better than its default value in supported limits.
      */
     actual val limits: Limits by lazy {
-        Arena.ofConfined().use { scope ->
-            val supported = WGPUSupportedLimits.allocate(scope)
+        memoryScope { scope ->
+            val supported = WGPULimits.allocate(scope)
             wgpuAdapterGetLimits(segment, supported)
-            val desc = WGPUSupportedLimits.limits(supported)
 
             Limits(
-                maxTextureDimension1D = WGPULimits.maxTextureDimension1D(desc),
-                maxTextureDimension2D = WGPULimits.maxTextureDimension2D(desc),
-                maxTextureDimension3D = WGPULimits.maxTextureDimension3D(desc),
-                maxTextureArrayLayers = WGPULimits.maxTextureArrayLayers(desc),
-                maxBindGroups = WGPULimits.maxBindGroups(desc),
-                maxBindGroupsPlusVertexBuffers = WGPULimits.maxBindGroupsPlusVertexBuffers(desc),
-                maxBindingsPerBindGroup = WGPULimits.maxBindingsPerBindGroup(desc),
+                maxTextureDimension1D = supported.maxTextureDimension1D.toInt(),
+                maxTextureDimension2D = supported.maxTextureDimension2D.toInt(),
+                maxTextureDimension3D = supported.maxTextureDimension3D.toInt(),
+                maxTextureArrayLayers = supported.maxTextureArrayLayers.toInt(),
+                maxBindGroups = supported.maxBindGroups.toInt(),
+                maxBindGroupsPlusVertexBuffers = supported.maxBindGroupsPlusVertexBuffers.toInt(),
+                maxBindingsPerBindGroup = supported.maxBindingsPerBindGroup.toInt(),
                 maxDynamicUniformBuffersPerPipelineLayout =
-                    WGPULimits.maxDynamicUniformBuffersPerPipelineLayout(desc),
+                    supported.maxDynamicUniformBuffersPerPipelineLayout.toInt(),
                 maxDynamicStorageBuffersPerPipelineLayout =
-                    WGPULimits.maxDynamicStorageBuffersPerPipelineLayout(desc),
+                    supported.maxDynamicStorageBuffersPerPipelineLayout.toInt(),
                 maxSampledTexturesPerShaderStage =
-                    WGPULimits.maxSampledTexturesPerShaderStage(desc),
-                maxSamplersPerShaderStage = WGPULimits.maxSamplersPerShaderStage(desc),
-                maxStorageBuffersPerShaderStage = WGPULimits.maxStorageBuffersPerShaderStage(desc),
+                    supported.maxSampledTexturesPerShaderStage.toInt(),
+                maxSamplersPerShaderStage = supported.maxSamplersPerShaderStage.toInt(),
+                maxStorageBuffersPerShaderStage = supported.maxStorageBuffersPerShaderStage.toInt(),
                 maxStorageTexturesPerShaderStage =
-                    WGPULimits.maxStorageTexturesPerShaderStage(desc),
-                maxUniformBuffersPerShaderStage = WGPULimits.maxUniformBuffersPerShaderStage(desc),
-                maxUniformBufferBindingSize = WGPULimits.maxUniformBufferBindingSize(desc),
-                maxStorageBufferBindingSize = WGPULimits.maxStorageBufferBindingSize(desc),
-                minUniformBufferOffsetAlignment = WGPULimits.minUniformBufferOffsetAlignment(desc),
-                minStorageBufferOffsetAlignment = WGPULimits.minStorageBufferOffsetAlignment(desc),
-                maxVertexBuffers = WGPULimits.maxVertexBuffers(desc),
-                maxBufferSize = WGPULimits.maxBufferSize(desc),
-                maxVertexAttributes = WGPULimits.maxVertexAttributes(desc),
-                maxVertexBufferArrayStride = WGPULimits.maxVertexBufferArrayStride(desc),
-                maxInterStageShaderComponents = WGPULimits.maxInterStageShaderComponents(desc),
-                maxInterStageShaderVariables = WGPULimits.maxInterStageShaderVariables(desc),
-                maxColorAttachments = WGPULimits.maxColorAttachments(desc),
+                    supported.maxStorageTexturesPerShaderStage.toInt(),
+                maxUniformBuffersPerShaderStage = supported.maxUniformBuffersPerShaderStage.toInt(),
+                maxUniformBufferBindingSize = supported.maxUniformBufferBindingSize.toLong(),
+                maxStorageBufferBindingSize = supported.maxStorageBufferBindingSize.toLong(),
+                minUniformBufferOffsetAlignment = supported.minUniformBufferOffsetAlignment.toInt(),
+                minStorageBufferOffsetAlignment = supported.minStorageBufferOffsetAlignment.toInt(),
+                maxVertexBuffers = supported.maxVertexBuffers.toInt(),
+                maxBufferSize = supported.maxBufferSize.toLong(),
+                maxVertexAttributes = supported.maxVertexAttributes.toInt(),
+                maxVertexBufferArrayStride = supported.maxVertexBufferArrayStride.toInt(),
+                maxInterStageShaderVariables = supported.maxInterStageShaderVariables.toInt(),
+                maxColorAttachments = supported.maxColorAttachments.toInt(),
                 maxColorAttachmentBytesPerSample =
-                    WGPULimits.maxColorAttachmentBytesPerSample(desc),
-                maxComputeWorkgroupStorageSize = WGPULimits.maxComputeWorkgroupStorageSize(desc),
+                    supported.maxColorAttachmentBytesPerSample.toInt(),
+                maxComputeWorkgroupStorageSize = supported.maxComputeWorkgroupStorageSize.toInt(),
                 maxComputeInvocationsPerWorkgroup =
-                    WGPULimits.maxComputeInvocationsPerWorkgroup(desc),
-                maxComputeWorkgroupSizeX = WGPULimits.maxComputeWorkgroupSizeX(desc),
-                maxComputeWorkgroupSizeY = WGPULimits.maxComputeWorkgroupSizeY(desc),
-                maxComputeWorkgroupSizeZ = WGPULimits.maxComputeWorkgroupSizeZ(desc),
-                maxComputeWorkgroupsPerDimension = WGPULimits.maxComputeWorkgroupsPerDimension(desc),
+                    supported.maxComputeInvocationsPerWorkgroup.toInt(),
+                maxComputeWorkgroupSizeX = supported.maxComputeWorkgroupSizeX.toInt(),
+                maxComputeWorkgroupSizeY = supported.maxComputeWorkgroupSizeY.toInt(),
+                maxComputeWorkgroupSizeZ = supported.maxComputeWorkgroupSizeZ.toInt(),
+                maxComputeWorkgroupsPerDimension = supported.maxComputeWorkgroupsPerDimension.toInt(),
             )
         }
     }
 
     actual suspend fun requestDevice(descriptor: DeviceDescriptor?): Device {
-        val output = atomic(WGPU_NULL)
-        Arena.ofConfined().use { scope ->
-            val desc = WGPUDeviceDescriptor.allocate(scope)
-            val deviceExtras = WGPUDeviceExtras.allocate(scope)
-            val chainedStruct = WGPUDeviceExtras.chain(deviceExtras)
-            val callback =
-                WGPUAdapterRequestDeviceCallback.allocate(
-                    { status, device, message, _ ->
-                        if (status == WGPURequestAdapterStatus_Success()) {
-                            output.update { device }
-                        } else {
-                            logger.log(Logger.Level.ERROR) {
-                                "requestDevice status=$status, message=${message.getString(0)}"
-                            }
-                        }
-                    },
-                    scope,
-                )
+        val output = atomic<WGPUDevice?>(null)
+        memoryScope { scope ->
 
-            WGPUChainedStruct.sType(chainedStruct, WGPUSType_DeviceExtras())
-            WGPUDeviceDescriptor.nextInChain(desc, deviceExtras)
-            if (descriptor != null) {
-                descriptor.label?.let { WGPUDeviceDescriptor.label(desc, it.toNativeString(scope)) }
-                descriptor.requiredFeatures?.let {
-                    val nativeArray = scope.allocateFrom(ValueLayout.JAVA_INT, it.size)
-                    it.forEachIndexed { index, jvmEntry ->
-                        val nativeEntry = nativeArray.asSlice((Int.SIZE_BYTES * index).toLong())
-
-                        nativeEntry.set(ValueLayout.JAVA_INT, 0L, jvmEntry.nativeVal)
+            val callback = WGPURequestDeviceCallback.allocate(scope) { status, device, message, userdata1, userdata2 ->
+                if (status == WGPURequestAdapterStatus_Success) {
+                    output.update { device }
+                } else {
+                    logger.log(Logger.Level.ERROR) {
+                        "requestDevice status=$status, message=${message?.data?.toKString(message.length)}"
                     }
-                    WGPUDeviceDescriptor.requiredFeatureCount(desc, it.size.toLong())
-                    WGPUDeviceDescriptor.requiredFeatures(desc, nativeArray)
-                }
-                descriptor.requiredLimits?.let { requiredLimits ->
-                    val nativeLimits = WGPULimits.allocate(scope)
-                    requiredLimits.maxTextureDimension1D?.let {
-                        WGPULimits.maxTextureDimension1D(nativeLimits, it)
-                    }
-                    requiredLimits.maxTextureDimension2D?.let {
-                        WGPULimits.maxTextureDimension2D(nativeLimits, it)
-                    }
-                    requiredLimits.maxTextureDimension3D?.let {
-                        WGPULimits.maxTextureDimension3D(nativeLimits, it)
-                    }
-                    requiredLimits.maxTextureArrayLayers?.let {
-                        WGPULimits.maxTextureArrayLayers(nativeLimits, it)
-                    }
-                    requiredLimits.maxBindGroups?.let { WGPULimits.maxBindGroups(nativeLimits, it) }
-                    requiredLimits.maxBindGroupsPlusVertexBuffers?.let {
-                        WGPULimits.maxBindGroupsPlusVertexBuffers(nativeLimits, it)
-                    }
-                    requiredLimits.maxBindingsPerBindGroup?.let {
-                        WGPULimits.maxBindingsPerBindGroup(nativeLimits, it)
-                    }
-                    requiredLimits.maxDynamicUniformBuffersPerPipelineLayout?.let {
-                        WGPULimits.maxDynamicUniformBuffersPerPipelineLayout(nativeLimits, it)
-                    }
-                    requiredLimits.maxDynamicStorageBuffersPerPipelineLayout?.let {
-                        WGPULimits.maxDynamicStorageBuffersPerPipelineLayout(nativeLimits, it)
-                    }
-                    requiredLimits.maxSampledTexturesPerShaderStage?.let {
-                        WGPULimits.maxSampledTexturesPerShaderStage(nativeLimits, it)
-                    }
-                    requiredLimits.maxSamplersPerShaderStage?.let {
-                        WGPULimits.maxSamplersPerShaderStage(nativeLimits, it)
-                    }
-                    requiredLimits.maxStorageBuffersPerShaderStage?.let {
-                        WGPULimits.maxStorageBuffersPerShaderStage(nativeLimits, it)
-                    }
-                    requiredLimits.maxStorageTexturesPerShaderStage?.let {
-                        WGPULimits.maxStorageTexturesPerShaderStage(nativeLimits, it)
-                    }
-                    requiredLimits.maxUniformBuffersPerShaderStage?.let {
-                        WGPULimits.maxUniformBuffersPerShaderStage(nativeLimits, it)
-                    }
-                    requiredLimits.maxUniformBufferBindingSize?.let {
-                        WGPULimits.maxUniformBufferBindingSize(nativeLimits, it)
-                    }
-                    requiredLimits.maxStorageBufferBindingSize?.let {
-                        WGPULimits.maxStorageBufferBindingSize(nativeLimits, it)
-                    }
-                    requiredLimits.minUniformBufferOffsetAlignment?.let {
-                        WGPULimits.minUniformBufferOffsetAlignment(nativeLimits, it)
-                    }
-                    requiredLimits.minStorageBufferOffsetAlignment?.let {
-                        WGPULimits.minStorageBufferOffsetAlignment(nativeLimits, it)
-                    }
-                    requiredLimits.maxVertexBuffers?.let {
-                        WGPULimits.maxVertexBuffers(nativeLimits, it)
-                    }
-                    requiredLimits.maxBufferSize?.let { WGPULimits.maxBufferSize(nativeLimits, it) }
-                    requiredLimits.maxVertexAttributes?.let {
-                        WGPULimits.maxVertexAttributes(nativeLimits, it)
-                    }
-                    requiredLimits.maxVertexBufferArrayStride?.let {
-                        WGPULimits.maxVertexBufferArrayStride(nativeLimits, it)
-                    }
-                    val nativeRequiredLimits = WGPURequiredLimits.allocate(scope)
-                    WGPURequiredLimits.limits(nativeRequiredLimits, nativeLimits)
                 }
             }
 
-            wgpuAdapterRequestDevice(segment, desc, callback, WGPU_NULL)
+            val callbackInfo = WGPURequestDeviceCallbackInfo.allocate(scope).apply {
+                this.callback = callback
+                this.userdata2 = scope.bufferOfAddress(callback.handler).handler
+            }
+
+            wgpuAdapterRequestDevice(segment, scope.map(descriptor), callbackInfo)
         }
-        return Device(output.value)
+        return Device(output.value ?: error("fail to get device"))
     }
 
     actual override fun release() {
@@ -737,14 +451,14 @@ actual class Adapter(var segment: MemorySegment) : Releasable {
     }
 }
 
-actual class Queue(val segment: MemorySegment) : Releasable {
+actual class Queue(val segment: WGPUQueue) : Releasable {
 
     actual fun submit(vararg cmdBuffers: CommandBuffer) {
-        Arena.ofConfined().use { scope ->
+        memoryScope { scope ->
             wgpuQueueSubmit(
                 segment,
-                cmdBuffers.size.toLong(),
-                cmdBuffers.map { it.segment }.toNativeArray(scope),
+                cmdBuffers.size.toULong(),
+                scope.bufferOfAddresses(cmdBuffers.map { it.segment.handler }).handler.let(::ArrayHolder)
             )
         }
     }
@@ -757,12 +471,12 @@ actual class Queue(val segment: MemorySegment) : Releasable {
         size: Long,
     ) {
         data as ByteBufferImpl
-        Arena.ofConfined().use { scope ->
+        memoryScope { scope ->
             wgpuQueueWriteTexture(
                 segment,
                 destination.toNative(scope),
-                data.segment,
-                size,
+                data.segment.handler,
+                size.toULong(),
                 layout.toNative(scope),
                 copySize.toNative(scope),
             )
@@ -777,14 +491,19 @@ actual class Queue(val segment: MemorySegment) : Releasable {
         size: Long,
     ) {
         data as ShortBufferImpl
+
         wgpuQueueWriteBuffer(
             segment,
             buffer.segment,
-            offset,
-            if (dataOffset > 0) data.segment.asSlice(dataOffset) else data.segment,
-            size * Short.SIZE_BYTES,
+            offset.toULong(),
+            dataBuffer(dataOffset, data),
+            (size * Short.SIZE_BYTES).toULong(),
         )
     }
+
+    private fun dataBuffer(dataOffset: Long, data: GenericBuffer<*>) =
+        if (dataOffset > 0) data.segment.handler.handler.asSlice(dataOffset)
+            .let(::NativeAddress) else data.segment.handler
 
     actual fun writeBuffer(
         buffer: GPUBuffer,
@@ -797,9 +516,9 @@ actual class Queue(val segment: MemorySegment) : Releasable {
         wgpuQueueWriteBuffer(
             segment,
             buffer.segment,
-            offset,
-            if (dataOffset > 0) data.segment.asSlice(dataOffset) else data.segment,
-            size * Int.SIZE_BYTES,
+            offset.toULong(),
+            dataBuffer(dataOffset, data),
+            (size * Int.SIZE_BYTES).toULong(),
         )
     }
 
@@ -814,9 +533,9 @@ actual class Queue(val segment: MemorySegment) : Releasable {
         wgpuQueueWriteBuffer(
             segment,
             buffer.segment,
-            offset,
-            if (dataOffset > 0) data.segment.asSlice(dataOffset) else data.segment,
-            size * Float.SIZE_BYTES,
+            offset.toULong(),
+            dataBuffer(dataOffset, data),
+            (size * Float.SIZE_BYTES).toULong(),
         )
     }
 
@@ -831,9 +550,9 @@ actual class Queue(val segment: MemorySegment) : Releasable {
         wgpuQueueWriteBuffer(
             segment,
             buffer.segment,
-            offset,
-            if (dataOffset > 0) data.segment.asSlice(dataOffset) else data.segment,
-            size,
+            offset.toULong(),
+            dataBuffer(dataOffset, data),
+            size.toULong(),
         )
     }
 
@@ -844,12 +563,12 @@ actual class Queue(val segment: MemorySegment) : Releasable {
         copySize: Extent3D,
         size: Long,
     ) {
-        Arena.ofConfined().use { scope ->
+        memoryScope { scope ->
             wgpuQueueWriteTexture(
                 segment,
                 destination.toNative(scope),
-                scope.allocateFrom(ValueLayout.JAVA_BYTE, *data),
-                size,
+                data.toBuffer(scope),
+                size.toULong(),
                 layout.toNative(scope),
                 copySize.toNative(scope),
             )
@@ -865,7 +584,7 @@ actual class Queue(val segment: MemorySegment) : Releasable {
     }
 }
 
-actual class ShaderModule(val segment: MemorySegment) : Releasable {
+actual class ShaderModule(val segment: WGPUShaderModule) : Releasable {
     actual override fun release() {
         wgpuShaderModuleRelease(segment)
     }
@@ -875,35 +594,34 @@ actual class ShaderModule(val segment: MemorySegment) : Releasable {
     }
 }
 
-actual class Surface(val segment: MemorySegment) : Releasable {
+actual class Surface(val segment: WGPUSurface) : Releasable {
 
     actual fun configure(configuration: SurfaceConfiguration) {
-        Arena.ofConfined().use { scope ->
-            val desc = WGPUSurfaceConfiguration.allocate(scope)
-            WGPUSurfaceConfiguration.device(desc, configuration.device.segment)
-            WGPUSurfaceConfiguration.usage(desc, configuration.usage.usageFlag)
-            WGPUSurfaceConfiguration.format(desc, configuration.format.nativeVal)
-            WGPUSurfaceConfiguration.presentMode(desc, configuration.presentMode.nativeVal)
-            WGPUSurfaceConfiguration.alphaMode(desc, configuration.alphaMode.nativeVal)
-            WGPUSurfaceConfiguration.width(desc, configuration.width)
-            WGPUSurfaceConfiguration.height(desc, configuration.height)
-            wgpuSurfaceConfigure(segment, desc)
+        memoryScope { scope ->
+            wgpuSurfaceConfigure(segment, scope.map(configuration))
         }
     }
 
+    private fun MemoryAllocator.map(input: SurfaceConfiguration): WGPUSurfaceConfiguration =
+        WGPUSurfaceConfiguration.allocate(this).also { output ->
+            output.device = input.device.segment
+            output.usage = input.usage.usageFlag.toULong()
+            output.format = input.format.nativeVal
+            output.presentMode = input.presentMode.nativeVal
+            output.alphaMode = input.alphaMode.nativeVal
+            output.width = input.width.toUInt()
+            output.height = input.height.toUInt()
+        }
+
     actual fun getCurrentTexture(): SurfaceTexture {
-        return Arena.ofConfined().use { scope ->
-            val surfaceTexture: MemorySegment = WGPUSurfaceTexture.allocate(scope)
+        return memoryScope { scope ->
+            val surfaceTexture = WGPUSurfaceTexture.allocate(scope)
             wgpuSurfaceGetCurrentTexture(segment, surfaceTexture)
-            val texture =
-                WGPUSurfaceTexture.texture(surfaceTexture).let {
-                    if (it == WGPU_NULL) null else WebGPUTexture(it, it.byteSize())
-                }
-            val status =
-                WGPUSurfaceTexture.status(surfaceTexture).let {
+            val texture = surfaceTexture.texture?.let { WebGPUTexture(it, it.handler.handler.byteSize())  }
+            val status = surfaceTexture.status.let {
                     TextureStatus.from(it) ?: error("Invalid texture status: $it")
                 }
-            SurfaceTexture(surfaceTexture, texture, status)
+            SurfaceTexture(texture, status)
         }
     }
 
@@ -912,35 +630,58 @@ actual class Surface(val segment: MemorySegment) : Releasable {
     }
 
     actual fun getCapabilities(adapter: Adapter): SurfaceCapabilities {
-        return Arena.ofConfined().use { scope ->
+        return memoryScope { scope ->
+
             val surfaceCapabilities = WGPUSurfaceCapabilities.allocate(scope)
             wgpuSurfaceGetCapabilities(segment, adapter.segment, surfaceCapabilities)
-            val formatCount = WGPUSurfaceCapabilities.formatCount(surfaceCapabilities)
-            val formatsArray = IntArray(formatCount.toInt()) { -1 }
-            val formatPtr = MemorySegment.ofArray(formatsArray)
-            MemorySegment.copy(
-                WGPUSurfaceCapabilities.formats(surfaceCapabilities),
-                0,
-                formatPtr,
-                0L,
-                formatCount * Int.SIZE_BYTES,
-            )
-            val formats = formatsArray.map { TextureFormat.from(it) }.filterNotNull().distinct()
 
-            val alphaModesCount = WGPUSurfaceCapabilities.alphaModeCount(surfaceCapabilities)
-            val alphaModesArray = IntArray(alphaModesCount.toInt()) { -1 }
-            val alphaModePtr = MemorySegment.ofArray(alphaModesArray)
-            MemorySegment.copy(
-                WGPUSurfaceCapabilities.alphaModes(surfaceCapabilities),
-                0,
-                alphaModePtr,
-                0L,
-                alphaModesCount * Int.SIZE_BYTES,
-            )
-            val alphaModes = alphaModesArray.map { AlphaMode.from(it) }.filterNotNull().distinct()
-            SurfaceCapabilities(surfaceCapabilities, formats, alphaModes)
+            val formats = surfaceCapabilities.formats ?: error("fail to get formats")
+            var supportedFormats = surfaceCapabilities.toTextureFormats(formats)
+
+            val alphaModes = surfaceCapabilities.alphaModes ?: error("fail to get alpha modes")
+            var supportedAlphaMode = surfaceCapabilities.toAlphaMode(alphaModes)
+
+            if (supportedFormats.isEmpty()) {
+                logger.warn { "fail to get supported textures on surface, will inject rgba8unorm format" }
+                supportedFormats = setOf(TextureFormat.RG8_UNORM)
+            }
+
+            if (supportedAlphaMode.isEmpty()) {
+                logger.warn { "fail to get supported alpha mode on surface, will inject inherit alpha mode" }
+                supportedAlphaMode = setOf(AlphaMode.INHERIT)
+            }
+            SurfaceCapabilities(supportedFormats.toList(), supportedAlphaMode.toList())
         }
     }
+
+    private fun WGPUSurfaceCapabilities.toTextureFormats(
+        formats: ArrayHolder<WGPUTextureFormat>
+    ) = UIntArray(formatCount.toInt()) { 0u }
+        .also {
+            MemoryBuffer(formats.handler, formatCount * Int.SIZE_BYTES.toULong())
+                .readUInts(it)
+        }
+        .map {
+            TextureFormat.from(it)
+                .also { if (it == null) logger.warn { "ignoring undefined format with value $it" } }
+        }
+        .filterNotNull()
+        .toSet()
+
+    private fun WGPUSurfaceCapabilities.toAlphaMode(
+        alphaModes: ArrayHolder<WGPUCompositeAlphaMode>
+    ) = UIntArray(formatCount.toInt()) { 0u }
+        .also {
+            MemoryBuffer(alphaModes.handler, formatCount * Int.SIZE_BYTES.toULong())
+                .readUInts(it)
+        }
+        .map {
+            AlphaMode.from(it)
+                .also { if (it == null) logger.warn { "ignoring undefined alpha mode with value $it" } }
+        }
+        .filterNotNull()
+        .toSet()
+
 
     actual fun getPreferredFormat(adapter: Adapter): TextureFormat {
         return getCapabilities(adapter).formats[0]
@@ -949,65 +690,61 @@ actual class Surface(val segment: MemorySegment) : Releasable {
     actual override fun release() {
         wgpuSurfaceRelease(segment)
     }
+
+    companion object {
+        private val logger = Logger<Surface>()
+    }
 }
 
-actual class WebGPUTexture(val segment: MemorySegment, val size: Long) : Releasable {
+actual class WebGPUTexture(val segment: WGPUTexture, val size: Long) : Releasable {
 
     private val info = TextureResourceInfo(this, size)
 
     actual fun createView(desc: TextureViewDescriptor?): TextureView {
         return if (desc != null) {
-            Arena.ofConfined().use { scope ->
-                val desc =
-                    WGPUTextureViewDescriptor.allocate(scope).also {
-                        WGPUTextureViewDescriptor.label(
-                            it,
-                            desc.label?.toNativeString(scope) ?: WGPU_NULL,
-                        )
-                        WGPUTextureViewDescriptor.format(it, desc.format.nativeVal)
-                        WGPUTextureViewDescriptor.dimension(it, desc.dimension.nativeVal)
-                        WGPUTextureViewDescriptor.aspect(it, desc.aspect.nativeVal)
-                        WGPUTextureViewDescriptor.baseMipLevel(it, desc.baseMipLevel)
-                        WGPUTextureViewDescriptor.mipLevelCount(it, desc.mipLevelCount)
-                        WGPUTextureViewDescriptor.baseArrayLayer(it, desc.baseArrayLayer)
-                        WGPUTextureViewDescriptor.arrayLayerCount(it, desc.arrayLayerCount)
-                    }
-                TextureView(wgpuTextureCreateView(segment, desc))
+            memoryScope { scope ->
+                TextureView(wgpuTextureCreateView(segment, scope.map(desc)) ?: error("Failed to create texture view"))
             }
         } else {
-            TextureView(wgpuTextureCreateView(segment, WGPU_NULL))
+            TextureView(wgpuTextureCreateView(segment, null) ?: error("Failed to create texture view"))
         }
     }
+
+    internal fun MemoryAllocator.map(input: TextureViewDescriptor) = WGPUTextureViewDescriptor.allocate(this)
+        .also { output ->
+
+            if (input.label != null) map(input.label, output.label)
+            output.format = input.format.nativeVal
+            output.dimension = input.dimension.nativeVal
+            output.aspect = input.aspect.nativeVal
+            output.baseMipLevel = input.baseMipLevel.toUInt()
+            output.mipLevelCount = input.mipLevelCount.toUInt()
+            output.baseArrayLayer = input.baseArrayLayer.toUInt()
+            output.arrayLayerCount = input.arrayLayerCount.toUInt()
+        }
 
     actual override fun release() {
         wgpuTextureRelease(segment)
         info.delete()
     }
 
-    actual fun destroy() {
-        wgpuTextureDestroy(segment)
-        info.delete()
-    }
 }
 
-actual class TextureView(val segment: MemorySegment) : IntoBindingResource {
-
-    override fun intoBindingResource(entry: MemorySegment) {
-        WGPUBindGroupEntry.textureView(entry, segment)
-    }
+actual class TextureView(val segment: WGPUTextureView) : IntoBindingResource {
 
     actual fun release() {
         wgpuTextureViewRelease(segment)
     }
 }
 
-actual class GPUBuffer(val segment: MemorySegment, actual val size: Long) : Releasable {
+actual class GPUBuffer(val segment: WGPUBuffer, actual val size: Long) : Releasable {
 
     private val info = BufferResourceInfo(this, size)
 
     actual fun getMappedRange(offset: Long, size: Long): ByteBuffer {
-        val mappedRange = wgpuBufferGetMappedRange(segment, offset, size).asSlice(offset, size)
-        return ByteBufferImpl(mappedRange.byteSize().toInt(), segment = mappedRange)
+        val mappedRange = (wgpuBufferGetMappedRange(segment, offset.toULong(), size.toULong()) ?: error("Failed to get mapped range"))
+            .let { MemoryBuffer(it, size.toULong()) }
+        return ByteBufferImpl(size.toInt(), mappedRange.handler.let { MemoryBuffer(it, size.toULong())})
     }
 
     actual fun getMappedRange(): ByteBuffer = getMappedRange(0, size)
@@ -1018,43 +755,41 @@ actual class GPUBuffer(val segment: MemorySegment, actual val size: Long) : Rele
 
     actual override fun release() {
         wgpuBufferRelease(segment)
-    }
-
-    actual fun destroy() {
-        wgpuBufferDestroy(segment)
         info.delete()
     }
+
 }
 
-actual class Sampler(val segment: MemorySegment) : IntoBindingResource, Releasable {
-
-    override fun intoBindingResource(entry: MemorySegment) {
-        WGPUBindGroupEntry.sampler(entry, segment)
-    }
+actual class Sampler(val segment: WGPUSampler) : IntoBindingResource, Releasable {
 
     actual override fun release() {
         wgpuSamplerRelease(segment)
     }
 }
 
-fun Extent3D.toNative(scope: SegmentAllocator): MemorySegment {
+fun Extent3D.toNative(scope: MemoryAllocator): WGPUExtent3D {
     val native = WGPUExtent3D.allocate(scope)
 
-    WGPUExtent3D.width(native, width)
-    WGPUExtent3D.height(native, height)
-    WGPUExtent3D.depthOrArrayLayers(native, depth)
+    native.width = width.toUInt()
+    native.height = height.toUInt()
+    native.depthOrArrayLayers = depth.toUInt()
 
     return native
 }
 
 actual class SurfaceCapabilities(
-    val segment: MemorySegment,
     actual val formats: List<TextureFormat>,
     actual val alphaModes: List<AlphaMode>,
-) {}
+)
 
 actual class SurfaceTexture(
-    val segment: MemorySegment,
     actual val texture: WebGPUTexture?,
     actual val status: TextureStatus,
 )
+
+private fun ByteArray.toBuffer(scope: MemoryAllocator): NativeAddress {
+    val memorySize = size.toULong() * Byte.SIZE_BYTES.toULong()
+    return scope.allocateBuffer(memorySize)
+        .also { buffer -> buffer.writeBytes(this) }
+        .handler
+}

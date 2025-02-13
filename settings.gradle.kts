@@ -20,10 +20,6 @@ rootProject.name = "littlekt"
 
 include(":core")
 
-include("wgpu-natives")
-
-include("wgpu-ffm")
-
 include("examples")
 
 include("scene-graph")

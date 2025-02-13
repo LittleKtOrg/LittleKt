@@ -100,7 +100,6 @@ class TextureViaCommandEncoderExample(context: Context) : ContextListener(contex
                 Extent3D(image.width, image.height, 1),
             )
             queue.submit(commandEncoder.finish())
-            textureBuffer.destroy()
         }
 
         val sampler = device.createSampler(SamplerDescriptor())

@@ -7,6 +7,9 @@ kotlinx-coroutines = "1.9.0"
 kotlinx-serialization = "1.7.3"
 lwjgl = "3.3.4"
 mp3-decoder = "1.0.1"
+jna = "5.16.0"
+wgpu4k-native = "v24.0.1"
+rococoa = "0.0.1"
 
 [libraries]
 kotlin-test = { module = "org.jetbrains.kotlin:kotlin-test", version.ref = "kotlin" }
@@ -20,6 +23,9 @@ lwjgl-glfw = { module = "org.lwjgl:lwjgl-glfw", version.ref = "lwjgl" }
 lwjgl-openal = { module = "org.lwjgl:lwjgl-openal", version.ref = "lwjgl" }
 lwjgl-stb = { module = "org.lwjgl:lwjgl-stb", version.ref = "lwjgl" }
 mp3-decoder = { module = "fr.delthas:javamp3", version.ref = "mp3-decoder" }
+wgpu4k-native = { module = "io.ygdrasil:wgpu4k-native", version.ref = "wgpu4k-native" }
+jna-platform = { module = "net.java.dev.jna:jna-platform", version.ref = "jna" }
+rococoa = { module = "io.ygdrasil:rococoa", version.ref = "rococoa" }
 
 [plugins]
 download = { id = "de.undercouch.download", version.ref = "download-gradle" }

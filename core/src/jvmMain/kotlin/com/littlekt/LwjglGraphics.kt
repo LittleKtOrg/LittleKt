@@ -3,17 +3,60 @@ package com.littlekt
 import com.littlekt.graphics.Cursor
 import com.littlekt.graphics.HdpiMode
 import com.littlekt.graphics.SystemCursor
-import com.littlekt.graphics.webgpu.*
+import com.littlekt.graphics.webgpu.Adapter
+import com.littlekt.graphics.webgpu.AlphaMode
+import com.littlekt.graphics.webgpu.Backend
+import com.littlekt.graphics.webgpu.Device
+import com.littlekt.graphics.webgpu.PresentMode
+import com.littlekt.graphics.webgpu.Surface
+import com.littlekt.graphics.webgpu.SurfaceCapabilities
+import com.littlekt.graphics.webgpu.SurfaceConfiguration
+import com.littlekt.graphics.webgpu.TextureFormat
+import com.littlekt.graphics.webgpu.TextureUsage
 import com.littlekt.log.Logger
-import com.littlekt.wgpu.*
-import com.littlekt.wgpu.WGPU.*
-import java.lang.foreign.Arena
-import java.lang.foreign.MemorySegment
+import com.sun.jna.Pointer
+import com.sun.jna.platform.win32.Kernel32
+import darwin.CAMetalLayer
+import darwin.NSWindow
+import ffi.MemoryAllocator
+import ffi.NativeAddress
+import ffi.memoryScope
+import io.ygdrasil.wgpu.WGPUAdapter
+import io.ygdrasil.wgpu.WGPUInstance
+import io.ygdrasil.wgpu.WGPUNativeSType_InstanceExtras
+import io.ygdrasil.wgpu.WGPURequestAdapterCallback
+import io.ygdrasil.wgpu.WGPURequestAdapterCallbackInfo
+import io.ygdrasil.wgpu.WGPURequestAdapterOptions
+import io.ygdrasil.wgpu.WGPURequestAdapterStatus
+import io.ygdrasil.wgpu.WGPURequestAdapterStatus_Success
+import io.ygdrasil.wgpu.WGPUSType_SurfaceSourceAndroidNativeWindow
+import io.ygdrasil.wgpu.WGPUSType_SurfaceSourceMetalLayer
+import io.ygdrasil.wgpu.WGPUSType_SurfaceSourceWaylandSurface
+import io.ygdrasil.wgpu.WGPUSType_SurfaceSourceWindowsHWND
+import io.ygdrasil.wgpu.WGPUSType_SurfaceSourceXlibWindow
+import io.ygdrasil.wgpu.WGPUStringView
+import io.ygdrasil.wgpu.WGPUSurface
+import io.ygdrasil.wgpu.WGPUSurfaceDescriptor
+import io.ygdrasil.wgpu.WGPUSurfaceSourceAndroidNativeWindow
+import io.ygdrasil.wgpu.WGPUSurfaceSourceMetalLayer
+import io.ygdrasil.wgpu.WGPUSurfaceSourceWaylandSurface
+import io.ygdrasil.wgpu.WGPUSurfaceSourceWindowsHWND
+import io.ygdrasil.wgpu.WGPUSurfaceSourceXlibWindow
+import io.ygdrasil.wgpu.wgpuCreateInstance
+import io.ygdrasil.wgpu.wgpuInstanceCreateSurface
+import io.ygdrasil.wgpu.wgpuInstanceRelease
+import io.ygdrasil.wgpu.wgpuInstanceRequestAdapter
 import kotlinx.atomicfu.atomic
 import kotlinx.atomicfu.update
-import org.lwjgl.glfw.*
-import org.lwjgl.system.JNI.*
-import org.lwjgl.system.macosx.ObjCRuntime.*
+import org.lwjgl.glfw.GLFW
+import org.lwjgl.glfw.GLFWNativeCocoa.glfwGetCocoaWindow
+import org.lwjgl.glfw.GLFWNativeWayland
+import org.lwjgl.glfw.GLFWNativeWin32
+import org.lwjgl.glfw.GLFWNativeX11.glfwGetX11Display
+import org.lwjgl.glfw.GLFWNativeX11.glfwGetX11Window
+import org.rococoa.ID
+import org.rococoa.Rococoa
+import java.lang.foreign.MemorySegment
 
 /**
  * @author Colton Daily
@@ -44,11 +87,11 @@ class LwjglGraphics(private val context: LwjglContext) : Graphics, Releasable {
     override val backBufferHeight: Int
         get() = _backBufferHeight
 
-    internal var instance: Instance = Instance(WGPU_NULL)
+    internal lateinit var instance: Instance
 
-    override var surface: Surface = Surface(WGPU_NULL)
-    override var adapter: Adapter = Adapter(WGPU_NULL)
-    override var device: Device = Device(WGPU_NULL)
+    override lateinit var surface: Surface
+    override lateinit var adapter: Adapter
+    override lateinit var device: Device
 
     override val preferredFormat by lazy { surface.getPreferredFormat(adapter) }
     private var hasSurfaceCapabilities = false
@@ -69,29 +112,43 @@ class LwjglGraphics(private val context: LwjglContext) : Graphics, Releasable {
     }
 
     internal suspend fun requestAdapterAndDevice(powerPreference: PowerPreference) {
-        val output = atomic(WGPU_NULL)
+        val output = atomic<WGPUAdapter?>(null)
 
-        Arena.ofConfined().use { scope ->
+        memoryScope { scope ->
+
             val options = WGPURequestAdapterOptions.allocate(scope)
-            val callback =
-                WGPUInstanceRequestAdapterCallback.allocate(
-                    { status, adapter, message, _ ->
-                        if (status == WGPURequestAdapterStatus_Success()) {
-                            output.update { adapter }
-                        } else {
-                            logger.error {
-                                "requestAdapter status=$status, message=${message.getString(0)}"
-                            }
+            options.compatibleSurface = surface.segment
+            options.powerPreference = powerPreference.nativeVal
+
+            val callback = WGPURequestAdapterCallback.allocate(scope, object : WGPURequestAdapterCallback {
+                override fun invoke(
+                    status: WGPURequestAdapterStatus,
+                    adapter: WGPUAdapter?,
+                    message: WGPUStringView?,
+                    userdata1: NativeAddress?,
+                    userdata2: NativeAddress?
+                ) {
+                    if (status == WGPURequestAdapterStatus_Success) {
+                        output.update { adapter }
+                    } else {
+                        logger.error {
+                            "requestAdapter status=$status, message=${message?.data?.toKString(message.length)}"
                         }
-                    },
-                    scope,
-                )
-            WGPURequestAdapterOptions.powerPreference(options, powerPreference.nativeVal)
-            WGPURequestAdapterOptions.compatibleSurface(options, surface.segment)
-            WGPURequestAdapterOptions.nextInChain(options, WGPU_NULL)
-            wgpuInstanceRequestAdapter(instance.segment, options, callback, WGPU_NULL)
+                    }
+                }
+            })
+
+            val callbackInfo = WGPURequestAdapterCallbackInfo.allocate(scope).apply {
+                this.callback = callback
+                this.userdata2 = scope.bufferOfAddress(callback.handler).handler
+            }
+
+            wgpuInstanceRequestAdapter(instance.segment, options, callbackInfo)
+
         }
-        adapter = Adapter(output.value)
+
+
+        adapter = Adapter(output.value ?: error("Failed to request adapter"))
         requestDevice()
     }
 
@@ -116,9 +173,11 @@ class LwjglGraphics(private val context: LwjglContext) : Graphics, Releasable {
                     SystemCursor.I_BEAM -> GLFW.glfwCreateStandardCursor(GLFW.GLFW_IBEAM_CURSOR)
                     SystemCursor.CROSSHAIR ->
                         GLFW.glfwCreateStandardCursor(GLFW.GLFW_CROSSHAIR_CURSOR)
+
                     SystemCursor.HAND -> GLFW.glfwCreateStandardCursor(GLFW.GLFW_HAND_CURSOR)
                     SystemCursor.HORIZONTAL_RESIZE ->
                         GLFW.glfwCreateStandardCursor(GLFW.GLFW_HRESIZE_CURSOR)
+
                     SystemCursor.VERTICAL_RESIZE ->
                         GLFW.glfwCreateStandardCursor(GLFW.GLFW_VRESIZE_CURSOR)
                 }
@@ -129,25 +188,18 @@ class LwjglGraphics(private val context: LwjglContext) : Graphics, Releasable {
     }
 
     internal fun createInstance(configuration: JvmConfiguration) {
-        instance =
-            Arena.ofConfined().use { scope ->
-                val instanceDesc = WGPUInstanceDescriptor.allocate(scope)
-                val extras = WGPUInstanceExtras.allocate(scope)
-                if (configuration.preferredBackends.isInvalid()) {
-                    logger.warn {
-                        "Configuration.preferredBackends is invalid and will resort to the default backend. Specify at least one backend or remove the list to get rid of this warning."
-                    }
-                } else {
-                    WGPUInstanceExtras.backends(extras, configuration.preferredBackends.flag)
-                }
-                WGPUChainedStruct.sType(
-                    WGPUInstanceExtras.chain(extras),
-                    WGPUSType_InstanceExtras(),
-                )
-                WGPUInstanceDescriptor.nextInChain(instanceDesc, extras)
-                Instance(wgpuCreateInstance(instanceDesc))
-            }
+        instance = memoryScope { scope ->
+            Instance(wgpuCreateInstance(scope.map(configuration.preferredBackends)) ?: error("Failed to create instance"))
+        }
     }
+
+    internal fun MemoryAllocator.map(backend: Backend) =
+        io.ygdrasil.wgpu.WGPUInstanceDescriptor.allocate(this).also { output ->
+            output.nextInChain = io.ygdrasil.wgpu.WGPUInstanceExtras.allocate(this).also { nextInChain ->
+                nextInChain.backends = backend.flag
+                nextInChain.chain.sType = WGPUNativeSType_InstanceExtras
+            }.handler
+        }
 
     internal fun configureSurfaceToWindow(windowHandle: Long) {
         val isMac = System.getProperty("os.name").lowercase().contains("mac")
@@ -157,149 +209,133 @@ class LwjglGraphics(private val context: LwjglContext) : Graphics, Releasable {
             Surface(
                 when {
                     isWindows -> {
-                        val osHandle = GLFWNativeWin32.glfwGetWin32Window(windowHandle)
-                        Arena.ofConfined().use { scope ->
-                            val desc = WGPUSurfaceDescriptor.allocate(scope)
-                            val windowsDesc = WGPUSurfaceDescriptorFromWindowsHWND.allocate(scope)
-                            WGPUSurfaceDescriptorFromWindowsHWND.hwnd(
-                                windowsDesc,
-                                MemorySegment.ofAddress(osHandle),
-                            )
-                            WGPUSurfaceDescriptorFromWindowsHWND.hinstance(windowsDesc, WGPU_NULL)
-                            WGPUChainedStruct.sType(
-                                WGPUSurfaceDescriptorFromWindowsHWND.chain(windowsDesc),
-                                WGPUSType_SurfaceDescriptorFromWindowsHWND(),
-                            )
-                            WGPUSurfaceDescriptor.label(desc, WGPU_NULL)
-                            WGPUSurfaceDescriptor.nextInChain(desc, windowsDesc)
-                            wgpuInstanceCreateSurface(instance.segment, desc)
-                        }
+                        val hwnd = GLFWNativeWin32.glfwGetWin32Window(windowHandle).toNativeAddress()
+                        val hinstance = Kernel32.INSTANCE.GetModuleHandle(null).pointer.toNativeAddress()
+                        instance.segment.getSurfaceFromWindows(hinstance, hwnd)
                     }
+
                     isLinux -> {
                         val platform = GLFW.glfwGetPlatform()
                         when (platform) {
                             GLFW.GLFW_PLATFORM_X11 -> {
-                                Arena.ofConfined().use { scope ->
-                                    val display = GLFWNativeX11.glfwGetX11Display()
-                                    val osHandle = GLFWNativeX11.glfwGetX11Window(windowHandle)
-                                    val desc = WGPUSurfaceDescriptor.allocate(scope)
-                                    val windowsDesc =
-                                        WGPUSurfaceDescriptorFromXlibWindow.allocate(scope)
-                                    WGPUSurfaceDescriptorFromXlibWindow.display(
-                                        windowsDesc,
-                                        MemorySegment.ofAddress(display),
-                                    )
-                                    WGPUSurfaceDescriptorFromXlibWindow.window(
-                                        windowsDesc,
-                                        osHandle,
-                                    )
-                                    WGPUChainedStruct.sType(
-                                        WGPUSurfaceDescriptorFromXlibWindow.chain(windowsDesc),
-                                        WGPUSType_SurfaceDescriptorFromXlibWindow(),
-                                    )
-                                    WGPUSurfaceDescriptor.label(desc, WGPU_NULL)
-                                    WGPUSurfaceDescriptor.nextInChain(desc, windowsDesc)
-                                    wgpuInstanceCreateSurface(instance.segment, desc)
-                                }
+                                val display = glfwGetX11Display().toNativeAddress()
+                                val x11_window = glfwGetX11Window(windowHandle).toULong()
+                                instance.segment.getSurfaceFromX11Window(display, x11_window) ?: error("fail to get surface on Linux")
                             }
+
                             GLFW.GLFW_PLATFORM_WAYLAND -> {
-                                Arena.ofConfined().use { scope ->
-                                    val display = GLFWNativeWayland.glfwGetWaylandDisplay()
-                                    val osHandle =
-                                        GLFWNativeWayland.glfwGetWaylandWindow(windowHandle)
-                                    val desc = WGPUSurfaceDescriptor.allocate(scope)
-                                    val windowsDesc =
-                                        WGPUSurfaceDescriptorFromWaylandSurface.allocate(scope)
-                                    WGPUSurfaceDescriptorFromWaylandSurface.display(
-                                        windowsDesc,
-                                        MemorySegment.ofAddress(display),
-                                    )
-                                    WGPUSurfaceDescriptorFromWaylandSurface.surface(
-                                        windowsDesc,
-                                        MemorySegment.ofAddress(osHandle),
-                                    )
-                                    WGPUChainedStruct.sType(
-                                        WGPUSurfaceDescriptorFromWaylandSurface.chain(windowsDesc),
-                                        WGPUSType_SurfaceDescriptorFromWaylandSurface(),
-                                    )
-                                    WGPUSurfaceDescriptor.label(desc, WGPU_NULL)
-                                    WGPUSurfaceDescriptor.nextInChain(desc, windowsDesc)
-                                    wgpuInstanceCreateSurface(instance.segment, desc)
-                                }
+                                val display = GLFWNativeWayland.glfwGetWaylandDisplay().toNativeAddress()
+                                val surface = GLFWNativeWayland.glfwGetWaylandWindow(windowHandle).toNativeAddress()
+                                instance.segment.getSurfaceFromWaylandWindow(display, surface) ?: error("fail to get surface on Linux")
                             }
+
                             else -> {
                                 logger.log(Logger.Level.ERROR) {
                                     "Linux platform not supported. Supported backends: [X11, Wayland]"
                                 }
-                                WGPU_NULL
+                                null
                             }
                         }
                     }
+
                     isMac -> {
-                        val osHandle = GLFWNativeCocoa.glfwGetCocoaWindow(windowHandle)
-                        Arena.ofConfined().use { scope ->
-                            val objc_msgSend = getLibrary().getFunctionAddress("objc_msgSend")
-                            val CAMetalLayer = objc_getClass("CAMetalLayer")
-                            val contentView =
-                                invokePPP(osHandle, sel_getUid("contentView"), objc_msgSend)
-                            // [ns_window.contentView setWantsLayer:YES];
-                            invokePPV(contentView, sel_getUid("setWantsLayer:"), true, objc_msgSend)
-                            // metal_layer = [CAMetalLayer layer];
-                            val metal_layer =
-                                invokePPP(CAMetalLayer, sel_registerName("layer"), objc_msgSend)
-                            // [ns_window.contentView setLayer:metal_layer];
-                            invokePPPP(
-                                contentView,
-                                sel_getUid("setLayer:"),
-                                metal_layer,
-                                objc_msgSend,
-                            )
-
-                            val desc = WGPUSurfaceDescriptor.allocate(scope)
-                            val metalDesc = WGPUSurfaceDescriptorFromMetalLayer.allocate(scope)
-                            WGPUSurfaceDescriptorFromMetalLayer.layer(
-                                metalDesc,
-                                MemorySegment.ofAddress(metal_layer),
-                            )
-                            WGPUChainedStruct.sType(
-                                WGPUSurfaceDescriptorFromMetalLayer.chain(metalDesc),
-                                WGPUSType_SurfaceDescriptorFromMetalLayer(),
-                            )
-                            WGPUSurfaceDescriptor.label(desc, WGPU_NULL)
-                            WGPUSurfaceDescriptor.nextInChain(desc, metalDesc)
-
-                            wgpuInstanceCreateSurface(instance.segment, desc)
-                        }
+                        val nsWindowPtr = glfwGetCocoaWindow(windowHandle)
+                        val nswindow = Rococoa.wrap(ID.fromLong(nsWindowPtr), NSWindow::class.java)
+                        nswindow.contentView()?.setWantsLayer(true)
+                        val layer = CAMetalLayer.layer()
+                        nswindow.contentView()?.setLayer(layer.id().toLong().toPointer())
+                        instance.segment.getSurfaceFromMetalLayer(layer.id().toLong().toNativeAddress())
                     }
+
                     else -> {
                         logger.log(Logger.Level.ERROR) { "Platform not supported." }
-                        WGPU_NULL
+                        null
                     }
-                }
+                } ?: error("Failed to create surface"),
             )
     }
 
     override fun release() {
-        if (device.queue.segment != WGPU_NULL) {
-            device.queue.release()
-        }
-        if (device.segment != WGPU_NULL) {
-            device.release()
-        }
-        if (adapter.segment != WGPU_NULL) {
-            adapter.release()
-        }
-
-        if (surface.segment != WGPU_NULL) {
-            surface.release()
-        }
-
-        if (instance.segment != WGPU_NULL) {
-            wgpuInstanceRelease(instance.segment)
-        }
+        device.queue.release()
+        device.release()
+        adapter.release()
+        surface.release()
+        wgpuInstanceRelease(instance.segment)
     }
 
     companion object {
         private val logger = Logger<LwjglGraphics>()
     }
 }
+
+
+private fun WGPUInstance.getSurfaceFromMetalLayer(metalLayer: NativeAddress): WGPUSurface? = memoryScope { scope ->
+
+    val surfaceDescriptor = WGPUSurfaceDescriptor.allocate(scope).apply {
+        nextInChain = WGPUSurfaceSourceMetalLayer.allocate(scope).apply {
+            chain.sType = WGPUSType_SurfaceSourceMetalLayer
+            layer = metalLayer
+        }.handler
+    }
+
+    return wgpuInstanceCreateSurface(this, surfaceDescriptor)
+}
+
+private fun WGPUInstance.getSurfaceFromX11Window(display: NativeAddress, window: ULong): WGPUSurface? = memoryScope { scope ->
+
+    val surfaceDescriptor = WGPUSurfaceDescriptor.allocate(scope).apply {
+        nextInChain = WGPUSurfaceSourceXlibWindow.allocate(scope).apply {
+            chain.sType = WGPUSType_SurfaceSourceXlibWindow
+            this.display = display
+            this.window = window
+        }.handler
+    }
+
+    return wgpuInstanceCreateSurface(this, surfaceDescriptor)
+}
+
+private fun WGPUInstance.getSurfaceFromAndroidWindow(window: NativeAddress): WGPUSurface? = memoryScope { scope ->
+
+    val surfaceDescriptor = WGPUSurfaceDescriptor.allocate(scope).apply {
+        nextInChain = WGPUSurfaceSourceAndroidNativeWindow.allocate(scope).apply {
+            chain.sType = WGPUSType_SurfaceSourceAndroidNativeWindow
+            this.window = window
+        }.handler
+    }
+
+    return wgpuInstanceCreateSurface(this, surfaceDescriptor)
+}
+
+private fun WGPUInstance.getSurfaceFromWaylandWindow(display: NativeAddress, surface: NativeAddress): WGPUSurface? = memoryScope { scope ->
+
+    val surfaceDescriptor = WGPUSurfaceDescriptor.allocate(scope).apply {
+        nextInChain = WGPUSurfaceSourceWaylandSurface.allocate(scope).apply {
+            chain.sType = WGPUSType_SurfaceSourceWaylandSurface
+            this.display = display
+            this.surface = surface
+        }.handler
+    }
+
+    return wgpuInstanceCreateSurface(this, surfaceDescriptor)
+}
+
+private fun WGPUInstance.getSurfaceFromWindows(hinstance: NativeAddress, hwnd: NativeAddress): WGPUSurface? = memoryScope { scope ->
+
+    val surfaceDescriptor = WGPUSurfaceDescriptor.allocate(scope).apply {
+        nextInChain = WGPUSurfaceSourceWindowsHWND.allocate(scope).apply {
+            chain.sType = WGPUSType_SurfaceSourceWindowsHWND
+            this.hwnd = hwnd
+            this.hinstance = hinstance
+        }.handler
+    }
+
+    return wgpuInstanceCreateSurface(this, surfaceDescriptor)
+}
+
+private fun Long.toNativeAddress() = let { MemorySegment.ofAddress(it) }
+    .let { NativeAddress(it) }
+
+private fun Pointer.toNativeAddress() = let { MemorySegment.ofAddress(Pointer.nativeValue(this)) }
+    .let { NativeAddress(it) }
+
+private fun Long.toPointer(): Pointer = Pointer(this)

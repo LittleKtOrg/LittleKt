@@ -254,7 +254,6 @@ class SpriteCacheShader(device: Device, staticSize: Int, dynamicSize: Int) :
             logger.debug {
                 "Attempting to write data to static sprite storage buffer that exceeds its current size. Destroying and recreating the buffer..."
             }
-            spriteStaticStorage.destroy()
             spriteStaticStorage.release()
             spriteStaticStorage =
                 device.createGPUFloatBuffer(
@@ -296,7 +295,6 @@ class SpriteCacheShader(device: Device, staticSize: Int, dynamicSize: Int) :
             logger.debug {
                 "Attempting to write data to dynamic sprite storage buffer that exceeds its current size. Destroying and recreating the buffer..."
             }
-            spriteDynamicStorage.destroy()
             spriteDynamicStorage.release()
             spriteDynamicStorage =
                 device.createGPUFloatBuffer(

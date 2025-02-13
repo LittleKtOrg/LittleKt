@@ -167,7 +167,7 @@ expect class Adapter : Releasable {
  */
 data class DeviceDescriptor(
     val label: String? = null,
-    val requiredFeatures: List<Feature>? = null,
+    val requiredFeatures: List<Feature> = listOf(),
     val requiredLimits: RequiredLimits? = null,
 )
 
@@ -480,11 +480,6 @@ data class Limits(
     val maxVertexAttributes: Int,
     /** The maximum allowed arrayStride when creating a GPURenderPipeline. */
     val maxVertexBufferArrayStride: Int,
-    /**
-     * The maximum allowed number of components of input or output variables for inter-stage
-     * communication (like vertex outputs or fragment inputs).
-     */
-    val maxInterStageShaderComponents: Int,
     /**
      * The maximum allowed number of input or output variables for inter-stage communication (like
      * vertex outputs or fragment inputs).
@@ -846,9 +841,6 @@ expect class WebGPUTexture : Releasable {
     fun createView(desc: TextureViewDescriptor? = null): TextureView
 
     override fun release()
-
-    /** Destroy the associated native resources as soon as possible. */
-    fun destroy()
 }
 
 /**
@@ -918,8 +910,6 @@ expect class GPUBuffer : Releasable {
 
     override fun release()
 
-    /** Destroy the associated native resources as soon as possible. */
-    fun destroy()
 }
 
 /**

@@ -1,15 +1,15 @@
 package com.littlekt.file
 
+import ffi.CString
+import ffi.MemoryBuffer
+import ffi.NativeAddress
 import java.lang.foreign.Arena
-import java.lang.foreign.MemorySegment
 import java.lang.foreign.ValueLayout
-import java.nio.ByteOrder
 import java.nio.ByteBuffer as NioByteBuffer
 
 internal abstract class GenericBuffer<T : ValueLayout>(
     final override val capacity: Int,
-    val segment: MemorySegment,
-    val layout: T,
+    val segment: MemoryBuffer
 ) : Buffer {
 
     override var dirty: Boolean = false
@@ -45,8 +45,7 @@ internal class ShortBufferImpl(capacity: Int) :
     ShortBuffer,
     GenericBuffer<ValueLayout.OfShort>(
         capacity,
-        Arena.ofAuto().allocate(capacity * Short.SIZE_BYTES.toLong()),
-        ValueLayout.JAVA_SHORT,
+        allocateBuffer((capacity * Short.SIZE_BYTES).toULong())
     ) {
     override var dirty: Boolean = false
 
@@ -54,22 +53,17 @@ internal class ShortBufferImpl(capacity: Int) :
         put(data)
     }
 
-    private fun MemorySegment.set(i: Int, value: Short) = setAtIndex(layout, i.toLong(), value)
-
     override fun get(i: Int): Short {
-        return segment.getAtIndex(layout, i.toLong())
+        return segment.readShort((i * Short.SIZE_BYTES).toULong())
     }
 
     override fun set(i: Int, value: Short) {
         dirty = true
-        segment.set(i, value)
+        segment.writeShort(value, (i * Short.SIZE_BYTES).toULong())
     }
 
     override fun put(data: ShortArray, srcOffset: Int, len: Int): ShortBuffer {
-        for (i in srcOffset until len) {
-            dirty = true
-            segment.set(position++, data[i])
-        }
+        segment.writeShorts(data, srcOffset.toULong(), 0uL, len.toULong())
         return this
     }
 
@@ -81,7 +75,8 @@ internal class ShortBufferImpl(capacity: Int) :
 
     override fun put(value: Short): ShortBuffer {
         dirty = true
-        segment.set(position++, value)
+        segment.writeShort(value, (position * Short.SIZE_BYTES).toULong())
+        position++
         return this
     }
 
@@ -98,8 +93,7 @@ internal class IntBufferImpl(capacity: Int) :
     IntBuffer,
     GenericBuffer<ValueLayout.OfInt>(
         capacity,
-        Arena.ofAuto().allocate(capacity * Int.SIZE_BYTES.toLong()),
-        ValueLayout.JAVA_INT,
+        allocateBuffer((capacity * Int.SIZE_BYTES).toULong())
     ) {
     override var dirty: Boolean = false
 
@@ -107,23 +101,18 @@ internal class IntBufferImpl(capacity: Int) :
         put(data)
     }
 
-    private fun MemorySegment.set(i: Int, value: Int) = setAtIndex(layout, i.toLong(), value)
-
     override fun get(i: Int): Int {
-        return segment.getAtIndex(layout, i.toLong())
+        return segment.readInt((i * Int.SIZE_BYTES).toULong())
     }
 
     override fun set(i: Int, value: Int) {
         dirty = true
-        segment.set(i, value)
+        segment.writeInt(value, (i * Int.SIZE_BYTES).toULong())
     }
 
     override fun put(data: IntArray, srcOffset: Int, len: Int): IntBuffer {
         dirty = true
-        for (i in srcOffset until srcOffset + len) {
-            dirty = true
-            segment.set(position++, data[i])
-        }
+        segment.writeInts(data, srcOffset.toULong(), 0uL, len.toULong())
         return this
     }
 
@@ -134,7 +123,8 @@ internal class IntBufferImpl(capacity: Int) :
 
     override fun put(value: Int): IntBuffer {
         dirty = true
-        segment.set(position++, value)
+        segment.writeInt(value, (position * Int.SIZE_BYTES).toULong())
+        position++
         return this
     }
 
@@ -151,8 +141,7 @@ internal class FloatBufferImpl(capacity: Int) :
     FloatBuffer,
     GenericBuffer<ValueLayout.OfFloat>(
         capacity,
-        Arena.ofAuto().allocate(capacity * Float.SIZE_BYTES.toLong()),
-        ValueLayout.JAVA_FLOAT,
+        allocateBuffer((capacity * Float.SIZE_BYTES).toULong())
     ) {
 
     override var dirty: Boolean = false
@@ -161,22 +150,18 @@ internal class FloatBufferImpl(capacity: Int) :
         put(data)
     }
 
-    private fun MemorySegment.set(i: Int, value: Float) = setAtIndex(layout, i.toLong(), value)
-
     override fun get(i: Int): Float {
-        return segment.getAtIndex(layout, i.toLong())
+        return segment.readFloat((i * Float.SIZE_BYTES).toULong())
     }
 
     override fun set(i: Int, value: Float) {
         dirty = true
-        segment.set(i, value)
+        segment.writeFloat(value, (i * Float.SIZE_BYTES).toULong())
     }
 
     override fun put(data: FloatArray, srcOffset: Int, len: Int): FloatBuffer {
-        for (i in srcOffset until srcOffset + len) {
-            dirty = true
-            segment.set(position++, data[i])
-        }
+        segment.writeFloats(data, srcOffset.toULong(), position.toULong(), len.toULong())
+        position += len
         return this
     }
 
@@ -187,7 +172,8 @@ internal class FloatBufferImpl(capacity: Int) :
 
     override fun put(value: Float): FloatBuffer {
         dirty = true
-        segment.set(position++, value)
+        segment.writeFloat(value, (position * Float.SIZE_BYTES).toULong())
+        position++
         return this
     }
 
@@ -200,10 +186,8 @@ internal class FloatBufferImpl(capacity: Int) :
 
     override fun put(data: FloatBuffer, dstOffset: Int, srcOffset: Int, len: Int): FloatBuffer {
         position = dstOffset
-        for (i in srcOffset until srcOffset + len) {
-            dirty = true
-            segment.set(position++, data[i])
-        }
+        segment.writeFloats(data.toArray(), srcOffset.toULong(), position.toULong(), len.toULong())
+        position += len
         return this
     }
 }
@@ -211,14 +195,10 @@ internal class FloatBufferImpl(capacity: Int) :
 /** ByteBuffer implementation. */
 internal class ByteBufferImpl(
     capacity: Int,
-    layout: ValueLayout.OfByte = ValueLayout.JAVA_BYTE,
-    val shortLayout: ValueLayout.OfShort = ValueLayout.JAVA_SHORT,
-    val intLayout: ValueLayout.OfInt = ValueLayout.JAVA_INT,
-    val floatLayout: ValueLayout.OfFloat = ValueLayout.JAVA_FLOAT,
-    segment: MemorySegment = Arena.ofAuto().allocate(capacity.toLong()),
-) : ByteBuffer, GenericBuffer<ValueLayout.OfByte>(capacity, segment, layout) {
+    segment: MemoryBuffer = allocateBuffer(capacity.toULong()),
+) : ByteBuffer, GenericBuffer<ValueLayout.OfByte>(capacity, segment) {
 
-    constructor(data: ByteArray) : this(data.size, ValueLayout.JAVA_BYTE) {
+    constructor(data: ByteArray) : this(data.size) {
         putByte(data)
     }
 
@@ -227,50 +207,32 @@ internal class ByteBufferImpl(
         isBigEndian: Boolean,
     ) : this(
         data.size,
-        if (isBigEndian) ValueLayout.JAVA_BYTE.withOrder(ByteOrder.nativeOrder())
-        else ValueLayout.JAVA_BYTE,
-        if (isBigEndian) ValueLayout.JAVA_SHORT.withOrder(ByteOrder.nativeOrder())
-        else ValueLayout.JAVA_SHORT,
-        if (isBigEndian) ValueLayout.JAVA_INT.withOrder(ByteOrder.nativeOrder())
-        else ValueLayout.JAVA_INT,
-        if (isBigEndian) ValueLayout.JAVA_FLOAT.withOrder(ByteOrder.nativeOrder())
-        else ValueLayout.JAVA_FLOAT,
     ) {
         putByte(data)
     }
 
-    private fun MemorySegment.set(i: Int, value: Byte) = set(layout, i.toLong(), value)
-
-    private fun MemorySegment.set(offset: Int, value: Int) = set(intLayout, offset.toLong(), value)
-
-    private fun MemorySegment.set(offset: Int, value: Float) =
-        set(floatLayout, offset.toLong(), value)
-
-    private fun MemorySegment.set(offset: Int, value: Short) =
-        set(shortLayout, offset.toLong(), value)
-
     override fun get(i: Int): Byte {
-        return segment.get(layout, i.toLong())
+        return segment.readByte(i.toULong())
     }
 
     override fun set(i: Int, value: Byte) {
         dirty = true
-        segment.set(i, value)
+        segment.writeByte(value, i.toULong())
     }
 
     override fun set(i: Int, value: Int) {
         dirty = true
-        segment.set(i, value)
+        segment.writeInt(value, i.toULong())
     }
 
     override fun set(i: Int, value: Short) {
         dirty = true
-        segment.set(i, value)
+        segment.writeShort(value, i.toULong())
     }
 
     override fun set(i: Int, value: Float) {
         dirty = true
-        segment.set(i, value)
+        segment.writeFloat(value, i.toULong())
     }
 
     override val readByte: Byte
@@ -299,17 +261,17 @@ internal class ByteBufferImpl(
     }
 
     override val readUByte: Byte
-        get() = segment.get(layout, (position++).toLong())
+        get() = segment.readByte((position++).toULong())
 
     override fun getUByte(offset: Int): UByte {
-        return segment.get(layout, offset.toLong()).toUByte()
+        return segment.readUByte(offset.toULong())
     }
 
     override fun getUByteArray(startOffset: Int, endOffset: Int): ByteArray {
         check(endOffset >= endOffset) { "endOffset must be >= the startOffset!" }
         val bytes = ByteArray(endOffset - startOffset)
         for (i in startOffset until endOffset) {
-            bytes[i - startOffset] = segment.get(layout, i.toLong())
+            bytes[i - startOffset] = segment.readByte(i.toULong())
         }
         position += endOffset - startOffset
         return bytes
@@ -317,13 +279,14 @@ internal class ByteBufferImpl(
 
     override fun putUByte(value: UByte): ByteBuffer {
         dirty = true
-        segment.set(position++, value.toByte())
+        segment.writeUByte(value, position.toULong())
+        position++
         return this
     }
 
     override fun putUByte(offset: Int, value: UByte): ByteBuffer {
         dirty = true
-        segment.set(offset, value.toByte())
+        segment.writeUByte(value, offset.toULong())
         position = offset + 1
         return this
     }
@@ -331,7 +294,8 @@ internal class ByteBufferImpl(
     override fun putUByte(data: ByteArray, srcOffset: Int, len: Int): ByteBuffer {
         for (i in srcOffset until srcOffset + len) {
             dirty = true
-            segment.set(position++, data[i])
+            segment.writeUByte(data[i].toUByte(), position.toULong())
+            position++
         }
         return this
     }
@@ -344,7 +308,8 @@ internal class ByteBufferImpl(
     override fun putUByte(data: ByteBuffer): ByteBuffer {
         for (i in data.position until data.limit) {
             dirty = true
-            segment.set(position++, data.getUByte(i).toByte())
+            segment.writeUByte(data.getUByte(i), position.toULong())
+            position++
         }
         return this
     }
@@ -352,7 +317,8 @@ internal class ByteBufferImpl(
     fun putUByte(data: NioByteBuffer): ByteBuffer {
         for (i in data.position() until data.limit()) {
             dirty = true
-            segment.set(position++, data.get(i))
+            segment.writeByte(data.get(i), position.toULong())
+            position++
         }
         return this
     }
@@ -361,13 +327,13 @@ internal class ByteBufferImpl(
 
     override val readUShort: Short
         get() {
-            val result = segment.get(shortLayout, position.toLong())
+            val result = segment.readShort(position.toULong())
             position += 2
             return result
         }
 
     override fun getUShort(offset: Int): UShort {
-        return segment.get(shortLayout, offset.toLong()).toUShort()
+        return segment.readUShort(offset.toULong())
     }
 
     override fun putUShort(value: UShort): ByteBuffer {
@@ -410,13 +376,13 @@ internal class ByteBufferImpl(
 
     override val readUInt: Int
         get() {
-            val result = segment.get(intLayout, position.toLong())
+            val result = segment.readInt(position.toULong())
             position += 4
             return result
         }
 
     override fun getUInt(offset: Int): UInt {
-        return segment.get(intLayout, offset.toLong()).toUInt()
+        return segment.readUInt(offset.toULong())
     }
 
     override fun putUInt(value: UInt): ByteBuffer {
@@ -455,7 +421,7 @@ internal class ByteBufferImpl(
     override fun putUInt(data: IntBuffer): ByteBuffer {
         for (i in data.position until data.limit) {
             dirty = true
-            segment.set(position, data[i])
+            segment.writeInt(data[i], position.toULong())
             position += 4
         }
         return this
@@ -463,13 +429,13 @@ internal class ByteBufferImpl(
 
     override val readFloat: Float
         get() {
-            val result = segment.get(floatLayout, position.toLong())
+            val result = segment.readFloat(position.toULong())
             position += 4
             return result
         }
 
     override fun getFloat(offset: Int): Float {
-        return segment.get(floatLayout, offset.toLong())
+        return segment.readFloat(offset.toULong())
     }
 
     override fun putFloat(value: Float): ByteBuffer {
@@ -516,18 +482,19 @@ internal class ByteBufferImpl(
     }
 
     override fun getString(offset: Int, length: Int): String {
-        var tag = ""
-        for (i in offset until offset + length) {
-            tag += segment.get(layout, i.toLong()).toInt().toChar()
-        }
-        return tag
+        return segment
+            .handler.handler
+            .asSlice(offset.toLong())
+            .let(::NativeAddress)
+            .let(::CString)
+            .toKString(length.toULong()) ?: error("Couldn't read string at offset $offset")
     }
 
     override fun getOffset(offset: Int, offSize: Int): Int {
         var v = 0
         for (i in 0 until offSize) {
             v = v shl 8
-            v += segment.get(layout, (offset + i).toLong())
+            v += segment.readInt((offset + i).toULong())
         }
         return v
     }
@@ -551,3 +518,8 @@ actual fun ByteBuffer(array: ByteArray): ByteBuffer = ByteBufferImpl(array)
 
 actual fun ByteBuffer(array: ByteArray, isBigEndian: Boolean): ByteBuffer =
     ByteBufferImpl(array, isBigEndian)
+
+private fun allocateBuffer(size: ULong): MemoryBuffer = Arena.ofAuto()
+    .allocate(size.toLong())
+    .let(::NativeAddress)
+    .let { MemoryBuffer(it, size) }

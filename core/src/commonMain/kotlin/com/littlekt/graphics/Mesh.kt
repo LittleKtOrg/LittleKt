@@ -54,7 +54,6 @@ open class Mesh<T : MeshGeometry>(val device: Device, val geometry: T) : Releasa
                     logger.trace {
                         "Destroying and creating VBO from size: ${vbo.size} to  size: ${geometry.vertices.capacity}"
                     }
-                    vbo.destroy()
                     vbo.release()
                     vbo =
                         device.createGPUByteBuffer(
@@ -82,7 +81,6 @@ open class Mesh<T : MeshGeometry>(val device: Device, val geometry: T) : Releasa
     }
 
     override fun release() {
-        vbo.destroy()
         vbo.release()
     }
 

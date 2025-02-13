@@ -62,7 +62,6 @@ class InstanceBuffers(val device: Device, instanceDataSize: Int) : Releasable {
             logger.debug {
                 "Attempting to write data to static instance storage buffer that exceeds its current size. Destroying and recreating the buffer..."
             }
-            staticStorage.destroy()
             staticStorage.release()
             staticStorage =
                 device.createGPUFloatBuffer(

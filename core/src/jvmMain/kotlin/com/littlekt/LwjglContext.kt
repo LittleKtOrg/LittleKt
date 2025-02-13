@@ -8,14 +8,20 @@ import com.littlekt.file.*
 import com.littlekt.file.Base64.decodeFromBase64
 import com.littlekt.file.vfs.VfsFile
 import com.littlekt.file.vfs.readPixmap
-import com.littlekt.graphics.webgpu.WGPU_NULL
 import com.littlekt.input.LwjglInput
 import com.littlekt.log.Logger
 import com.littlekt.resources.internal.InternalResources
 import com.littlekt.util.datastructure.fastForEach
 import com.littlekt.util.now
-import com.littlekt.wgpu.WGPU.*
-import com.littlekt.wgpu.WGPULogCallback
+import ffi.globalMemory
+import io.ygdrasil.wgpu.WGPULogCallback
+import io.ygdrasil.wgpu.WGPULogLevel_Debug
+import io.ygdrasil.wgpu.WGPULogLevel_Error
+import io.ygdrasil.wgpu.WGPULogLevel_Info
+import io.ygdrasil.wgpu.WGPULogLevel_Trace
+import io.ygdrasil.wgpu.WGPULogLevel_Warn
+import io.ygdrasil.wgpu.wgpuSetLogCallback
+import io.ygdrasil.wgpu.wgpuSetLogLevel
 import java.lang.foreign.Arena
 import java.nio.ByteBuffer
 import java.nio.IntBuffer
@@ -209,23 +215,20 @@ class LwjglContext(override val configuration: JvmConfiguration) : Context() {
     }
 
     private fun initLogging() {
-        val callback =
-            WGPULogCallback.Function { level, message, _ ->
-                val messageJvm = message.getString(0)
-                val logLevel =
-                    when (level) {
-                        WGPULogLevel_Error() -> Logger.Level.ERROR
-                        WGPULogLevel_Warn() -> Logger.Level.WARN
-                        WGPULogLevel_Info() -> Logger.Level.INFO
-                        WGPULogLevel_Debug() -> Logger.Level.DEBUG
-                        WGPULogLevel_Trace() -> Logger.Level.TRACE
-                        else -> Logger.Level.NONE
-                    }
-                wgpuLogger.log(logLevel) { messageJvm }
+        val callback = WGPULogCallback.allocate(globalMemory) { level, cMessage, userdata ->
+            val message = cMessage?.data?.toKString(cMessage.length) ?: "empty message"
+            when (level) {
+                WGPULogLevel_Error -> logger.error { message }
+                WGPULogLevel_Warn -> logger.warn { message }
+                WGPULogLevel_Info -> logger.info { message }
+                WGPULogLevel_Debug -> logger.debug { message }
+                WGPULogLevel_Trace -> logger.trace { message }
+                else -> logger.warn { "Unknown log level $level with message $message" }
             }
+        }
 
-        wgpuSetLogCallback(WGPULogCallback.allocate(callback, scope), WGPU_NULL)
-        wgpuSetLogLevel(WGPULogLevel_Trace())
+        wgpuSetLogLevel(WGPULogLevel_Trace)
+        wgpuSetLogCallback(callback, globalMemory.bufferOfAddress(callback.handler).handler)
     }
 
     private fun updateFramebufferInfo() {

@@ -45,7 +45,6 @@ class IndexedMesh<T : IndexedMeshGeometry>(device: Device, geometry: T) :
                     logger.trace {
                         "Destroying and creating VBO from size: ${vbo.size} to  size: ${geometry.vertices.capacity}"
                     }
-                    vbo.destroy()
                     vbo.release()
                     vbo =
                         device.createGPUByteBuffer(
@@ -83,7 +82,6 @@ class IndexedMesh<T : IndexedMeshGeometry>(device: Device, geometry: T) :
 
     private fun destroyAndRecreateIbo() {
         logger.trace { "Destroy and recreating IBO." }
-        ibo.destroy()
         ibo.release()
         if (geometry.indicesType == IndexedMeshGeometry.IndicesType.QUAD) {
             logger.trace { "Regenerating indices as quads." }
@@ -102,8 +100,6 @@ class IndexedMesh<T : IndexedMeshGeometry>(device: Device, geometry: T) :
     }
 
     override fun release() {
-        vbo.destroy()
-        ibo.destroy()
         vbo.release()
         ibo.release()
     }
